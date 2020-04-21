@@ -1,6 +1,6 @@
 
-# Created by https://www.gitignore.io/api/c,linux,macos,windows,clion+all
-# Edit at https://www.gitignore.io/?templates=c,linux,macos,windows,clion+all
+# Created by https://www.gitignore.io/api/c,linux,macos,cmake,windows,clion+all
+# Edit at https://www.gitignore.io/?templates=c,linux,macos,cmake,windows,clion+all
 
 ### C ###
 # Prerequisites
@@ -142,6 +142,23 @@ modules.xml
 # Sonarlint plugin
 .idea/sonarlint
 
+### CMake ###
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+
+### CMake Patch ###
+# External projects
+*-prefix/
+
 ### Linux ###
 *~
 
@@ -211,4 +228,4 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
-# End of https://www.gitignore.io/api/c,linux,macos,windows,clion+all
+# End of https://www.gitignore.io/api/c,linux,macos,cmake,windows,clion+all
