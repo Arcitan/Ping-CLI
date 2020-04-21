@@ -65,19 +65,19 @@ open_socket(char *hostname)
 
         // Retrieve information about the "ICMP" protocol
         if ((proto = getprotobyname("ICMP")) == NULL) {
-                fprintf(stderr, "error: failed to retrieve ICMP protocol\n");
+                fprintf(stderr, "failed to retrieve ICMP protocol\n");
                 return (-1);
         }
 
         // Set "sd" to a newly created raw socket
         if ((sd = socket(AF_INET, SOCK_RAW, proto->p_proto)) < 0) {
-                fprintf(stderr, "error: failed to create socket\n");
+                fprintf(stderr, "failed to create socket\n");
                 return (-1);
         };
 
         // Use getaddrinfo() to get the server's IP address
         if ((err = getaddrinfo(hostname, NULL, NULL, &ai)) != 0) {
-                fprintf(stderr, "error: getaddrinfo failed: %s\n",
+                fprintf(stderr, "getaddrinfo failed: %s\n",
                     gai_strerror(err));
                 return (-2);
         }

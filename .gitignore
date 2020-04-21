@@ -154,6 +154,8 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 _deps
+# ignore compiled binaries
+ping
 
 ### CMake Patch ###
 # External projects
