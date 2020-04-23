@@ -72,9 +72,11 @@ bool pingflag = 1;              /* Flag for the infinite ping loop */
 /* Function signatures */
 static unsigned short checksum(void *b, int len);
 
+static void receive();
+
 static int open_socket();
 
-static void ping(const char *hostparam);
+static void ping();
 
 static void sigint_handler(int signum);
 
@@ -173,104 +175,38 @@ checksum(void *b, int len)
  *   the "echo reply" packets sent back.
  */
 static void
-ping(const char *hostparam)
+ping()
 {
-        struct sockaddr_in clientaddr;
-        struct packet pckt;
-        struct timespec ts, te;
-        long double pckt_time, rtt;
-        long double m = 0, s = 0, tmp_m;
-        unsigned int clientlen = sizeof(clientaddr);
-        unsigned int i, k = 1;
-        int bytes_rec;
-        bool was_sent = 1;
 
-        /* Display opening message */
-        printf("PING %s (%s) %lu(%d) bytes of data.\n", hostparam, ip,
-            PAYLOADSIZE,
-            PACKETSIZE);
+
+        /* Compute elapsed time between sending and receiving */
+        clock_gettime(CLOCK_MONOTONIC, &te);
+        pckt_time = ((double) (te.tv_nsec - ts.tv_nsec)) /
+            1000000.0;
+        rtt = (te.tv_sec - ts.tv_sec) * 1000.0 + pckt_time;
+
+        /* Keep track of statistics */
+        rtt_min = MIN(rtt_min, rtt);
+        rtt_max = MAX(rtt_min, rtt);
+        rtt_tot += rtt;
 
         /*
-         * Continue sending pings until told to stop
+         * Compute st. dev. of a stream using Welford's method (see
+         * Reference (7))
          */
-        while (pingflag) {
-                /* Create the ICMP packet */
-                bzero(&pckt, sizeof(pckt));
-                pckt.hdr.type = ICMP_ECHO;
-                pckt.hdr.un.echo.id = pid;
-                for (i = 0; i < sizeof(pckt.payload) - 1; i++)
-                        pckt.payload[i] = i + '0';
-                pckt.payload[i] = 0;
-                pckt.hdr.un.echo.sequence = nsent++;
-                pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
+        tmp_m = m;
+        m += ((rtt - tmp_m) / k);
+        s += ((rtt - tmp_m) * (rtt - m));
+        k++;
+        rtt_std = sqrt(s / (k - 2));
 
-                sleep(SLEEPRATE);
 
-                /* Send the packet */
-                clock_gettime(CLOCK_MONOTONIC, &ts);
-                if (sendto(sd, &pckt, sizeof(pckt), 0,
-                    (struct sockaddr *) &serveraddr,
-                    sizeof(serveraddr)) <= 0) {
-                        perror("sendto");
-                        // Mark packet as not sent
-                        was_sent = 0;
-                }
+}
 
-                /* Receive the returning packet */
-                if ((bytes_rec = recvfrom(sd, &pckt, sizeof(pckt), 0,
-                    (struct sockaddr *) &clientaddr, &clientlen)) < 0) {
-                        /*
-                         * Ignore any signal interrupt errors, since that's
-                         * part of normal usage (user will CTRL+C)
-                         */
-                        if (!(errno = EINTR)) {
-                                perror("ping: recvfrom");
-                        }
 
-                        // Try next packet since we failed to receive this one
-                        continue;
-                }
-
-                /* Compute elapsed time between sending and receiving */
-                clock_gettime(CLOCK_MONOTONIC, &te);
-                pckt_time = ((double) (te.tv_nsec - ts.tv_nsec)) /
-                    1000000.0;
-                rtt = (te.tv_sec - ts.tv_sec) * 1000.0 + pckt_time;
-
-                /* Keep track of statistics */
-                rtt_min = MIN(rtt_min, rtt);
-                rtt_max = MAX(rtt_min, rtt);
-                rtt_tot += rtt;
-
-                /*
-                 * Compute st. dev. of a stream using Welford's method (see
-                 * Reference (7))
-                 */
-                tmp_m = m;
-                m += ((rtt - tmp_m) / k);
-                s += ((rtt - tmp_m) * (rtt - m));
-                k++;
-                rtt_std = sqrt(s / (k - 2));
-
-                /* Inspect the received packet and print out results */
-                if (was_sent) {
-                        // Verify packet consistency
-                        if (pckt.hdr.code != ICMP_ECHOREPLY) {
-                                fprintf(stderr,
-                                    "packet received with ICMP type %d and code "
-                                    "%d\n", pckt.hdr.type, pckt.hdr.code);
-                                continue;
-                        }
-
-                        // Print results
-                        printf(
-                            "%d bytes from %s (%s): icmp_seq=%d ttl=%d rtt=%Lf "
-                            "ms\n", bytes_rec, hostname, ip, nsent, TTLVAL,
-                            rtt);
-
-                        nreceived++;
-                }
-        }
+static void
+receive()
+{
 
 }
 
@@ -288,6 +224,8 @@ ping(const char *hostparam)
 static int
 open_socket()
 {
+        int ttlval = TTLVAL;
+
         /* Retrieve information about the "ICMP" protocol */
         if ((proto = getprotobyname("ICMP")) == NULL) {
                 fprintf(stderr, "failed to retrieve ICMP protocol\n");
@@ -298,6 +236,14 @@ open_socket()
         if ((sd = socket(AF_INET, SOCK_RAW, proto->p_proto)) < 0) {
                 fprintf(stderr, "failed to create socket\n");
                 return (-1);
+        }
+
+        /*
+         * Set the TTL value for the socket. If a packet remains out in the
+         * network for longer than the set TTL value, it will be discarded.
+         */
+        if (setsockopt(sd, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval)) != 0) {
+                perror("setsockopt: failed to set TTL value");
         }
 
         return (sd);
@@ -319,14 +265,13 @@ main(int argc, char **argv)
 {
         struct addrinfo *ai;
         struct sigaction action;
-        const int ttlval = TTLVAL;
         unsigned int addrlen;
         int err;
         char *host;
 
         /* Verify usage */
         if (argc != 2) {
-                fprintf(stderr, "usage: %s <host>\n", argv[0]);
+                fprintf(stderr, "usage: %s <hostname/IPv4 addr>\n", argv[0]);
                 exit(1);
         }
 
@@ -356,6 +301,7 @@ main(int argc, char **argv)
         serveraddr.sin_family = ai->ai_family;
         serveraddr.sin_addr = ((struct sockaddr_in *) ai->ai_addr)->sin_addr;
 
+
         /* Get the **actual** host name and IP address of the host */
         if ((err = getnameinfo((struct sockaddr *) &serveraddr, addrlen,
             hostname, NI_MAXHOST, NULL, 0, 0)) < 0) {
@@ -371,22 +317,21 @@ main(int argc, char **argv)
                 perror("open_socket() unix error");
         }
 
-        /*
-         * Set the TTL value for the socket. If a packet remains out in the
-         * network for longer than the set TTL value, it will be discarded.
-         */
-        if (setsockopt(sd, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval)) != 0)
-                perror("setsockopt: failed to set TTL value");
-
         /* Continuously ping the host */
-        ping(host);
+        while (pingflag) {
+                ping();
+                receive();
+        }
 
         /* Print statistics once we're done */
         show_stats();
 
-        /* Cleanup and exit */
-        close(sd);
+        /*
+         * Cleanup and exit. Normally we would error-check these, but since
+         * the program is terminating anyway we can opt not to.
+         */
         freeaddrinfo(ai);
+        close(sd);
 
         return (0);
 }
