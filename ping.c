@@ -283,14 +283,11 @@ ping(const char *hostparam)
  * Effects:
  *   Opens a raw socket connection to the server at <hostname> and
  *   returns a file descriptor ready for reading and writing.  Returns -1 and
- *   sets errno on a Unix error.  Returns -2 on a DNS (getaddrinfo) error.
+ *   sets errno on a Unix error.
  */
 static int
 open_socket()
 {
-        struct addrinfo *ai;
-        int err;
-
         /* Retrieve information about the "ICMP" protocol */
         if ((proto = getprotobyname("ICMP")) == NULL) {
                 fprintf(stderr, "failed to retrieve ICMP protocol\n");
@@ -301,13 +298,6 @@ open_socket()
         if ((sd = socket(AF_INET, SOCK_RAW, proto->p_proto)) < 0) {
                 fprintf(stderr, "failed to create socket\n");
                 return (-1);
-        }
-
-        /* Use getaddrinfo() to get the server's IP address */
-        if ((err = getaddrinfo(hostname, NULL, NULL, &ai)) != 0) {
-                fprintf(stderr, "getaddrinfo failed: %s\n",
-                    gai_strerror(err));
-                return (-2);
         }
 
         return (sd);
@@ -350,13 +340,6 @@ main(int argc, char **argv)
         if (sigaction(SIGINT, &action, NULL) < 0)
                 perror("sigaction error");
 
-        /* Get the protocol */
-        if ((proto = getprotobyname("ICMP")) == NULL) {
-                fprintf(stderr, "getprotobyname() failed: unknown protocol "
-                                "'ICMP'\n");
-                exit(1);
-        }
-
         /* Use getaddrinfo() to get the server's IP address. */
         host = argv[1];
         if ((err = getaddrinfo(host, NULL, NULL, &ai)) != 0) {
@@ -386,8 +369,6 @@ main(int argc, char **argv)
         /* Open a raw socket to the destination */
         if ((sd = open_socket()) == -1) {
                 perror("open_socket() unix error");
-        } else if (sd == -2) {
-                perror("open_socket() DNS error");
         }
 
         /*
@@ -402,6 +383,10 @@ main(int argc, char **argv)
 
         /* Print statistics once we're done */
         show_stats();
+
+        /* Cleanup and exit */
+        close(sd);
+        freeaddrinfo(ai);
 
         return (0);
 }
