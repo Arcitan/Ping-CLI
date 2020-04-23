@@ -6,9 +6,14 @@
  * loss and RTT times for each sent message.
  *
  * References:
- *      http://www.ping127001.com/pingpage.htm
- *
+ *   (1) http://www.ping127001.com/pingpage.htm
+ *   (2) https://www.cs.utah.edu/~swalton/listings/sockets/programs/part4/chap18/myping.c
+ *   (3) https://www.tenouk.com/Module43a.html
+ *   (4) https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol
+ *   (5) https://opensourceforu.com/2015/03/a-guide-to-using-raw-sockets/
+ *   (6) https://www.geeksforgeeks.org/internet-control-message-protocol-icmp/
  */
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 
@@ -18,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <arpa/inet.h>
 
@@ -32,7 +38,7 @@
 #define MAXLINE         8192
 #define PACKETSIZE      64
 #define PAYLOADSIZE     (PACKETSIZE - sizeof(struct icmphdr))
-#define DEFAULTPORT     0
+#define TTLVAL          255
 
 /* Structs */
 struct packet {
@@ -41,10 +47,86 @@ struct packet {
 };
 
 /* Global variables */
-struct protoent *proto = NULL;
+struct protoent *proto = NULL;  /* Pointer to protocol info */
+struct sockaddr_in serveraddr;  /* The destination IP info */
+int pid = -1;                   /* Process ID of this process */
+int sd;                         /* Socket file descriptor */
 
 /* Function signatures */
-static int open_socket(char *hostname);
+static int open_socket(const char *hostname);
+
+static void ping();
+
+/*
+ * Requires:
+ *   None.
+ *
+ * Effects:
+ *   Computes the 1s complement checksum. Taken from Reference (2).
+ *
+ */
+unsigned short checksum(void *b, int len)
+{
+        unsigned short *buf = b;
+        unsigned int sum = 0;
+        unsigned short result;
+
+        for (sum = 0; len > 1; len -= 2)
+                sum += *buf++;
+        if (len == 1)
+                sum += *(unsigned char *) buf;
+        sum = (sum >> 16) + (sum & 0xFFFF);
+        sum += (sum >> 16);
+        result = ~sum;
+        return result;
+}
+
+/*
+ * Requires:
+ *   None.
+ *
+ * Effects:
+ *   Pings the destination server given by "hostname" with an ICMP packet.
+ */
+static void
+ping()
+{
+        struct sockaddr_in clientaddr;
+        struct packet pckt;
+        unsigned int clientlen = sizeof(clientaddr);
+        unsigned int i;
+        int message_count = 1;
+
+        /* Create the ICMP packet */
+        bzero(&pckt, sizeof(pckt));
+        pckt.hdr.type = ICMP_ECHO;
+        pckt.hdr.un.echo.id = pid;
+        for (i = 0; i < sizeof(pckt.payload) - 1; i++)
+                pckt.payload[i] = i + '0';
+        pckt.payload[i] = 0;
+        pckt.hdr.un.echo.sequence = message_count++;
+        pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
+
+        /* Send the packet */
+        if (sendto(sd, &pckt, sizeof(pckt), 0, (struct sockaddr *) &serveraddr,
+            sizeof(serveraddr)) <= 0)
+                perror("sendto");
+        sleep(1);
+
+        /*
+         * Receive the returning packet from the socket. Check for recvfrom
+         * errors if we've sent at least one message, since we expect a
+         * response.
+         */
+        if ((recvfrom(sd, &pckt, sizeof(pckt), 0,
+            (struct sockaddr *) &clientaddr, &clientlen) < 0) &&
+            message_count > 1) {
+                /* If we've been interrupted by a signal, ignore the error */
+                if (!(errno = EINTR)) {
+                        perror("ping: recvfrom");
+                }
+        }
+}
 
 
 /*
@@ -58,24 +140,24 @@ static int open_socket(char *hostname);
  *   sets errno on a Unix error.  Returns -2 on a DNS (getaddrinfo) error.
  */
 static int
-open_socket(char *hostname)
+open_socket(const char *hostname)
 {
         struct addrinfo *ai;
-        int sd, err;
+        int err;
 
-        // Retrieve information about the "ICMP" protocol
+        /* Retrieve information about the "ICMP" protocol */
         if ((proto = getprotobyname("ICMP")) == NULL) {
                 fprintf(stderr, "failed to retrieve ICMP protocol\n");
                 return (-1);
         }
 
-        // Set "sd" to a newly created raw socket
+        /* Set "sd" to a newly created raw socket */
         if ((sd = socket(AF_INET, SOCK_RAW, proto->p_proto)) < 0) {
                 fprintf(stderr, "failed to create socket\n");
                 return (-1);
-        };
+        }
 
-        // Use getaddrinfo() to get the server's IP address
+        /* Use getaddrinfo() to get the server's IP address */
         if ((err = getaddrinfo(hostname, NULL, NULL, &ai)) != 0) {
                 fprintf(stderr, "getaddrinfo failed: %s\n",
                     gai_strerror(err));
@@ -84,6 +166,7 @@ open_socket(char *hostname)
 
         return (sd);
 }
+
 
 /*
  * Requires:
@@ -98,25 +181,58 @@ open_socket(char *hostname)
 int
 main(int argc, char **argv)
 {
-        int sd;
+        struct addrinfo *ai;
+        const int ttlval = TTLVAL;
+        int err;
         char *host;
 
-        // Verify usage
+        /* Verify usage */
         if (argc != 2) {
                 fprintf(stderr, "usage: %s <host>\n", argv[0]);
                 exit(1);
         }
 
-        // Set up a raw socket to the host
-        host = argv[1];
-        sd = open_socket(host);
-        if (sd == -1) {
-                fprintf(stderr,
-                    "open_socket unix error: %s\n",
-                    strerror(errno));
-        } else if (sd == -2) {
-                fprintf(stderr, "open_socket dns error\n");
+        /* Store the process ID (we'll use it in the packet) */
+        pid = getpid();
+
+        /* Get the protocol */
+        if ((proto = getprotobyname("ICMP")) == NULL) {
+                fprintf(stderr, "getprotobyname() failed: unknown protocol "
+                                "'ICMP'\n");
+                exit(1);
         }
+
+        /* Use getaddrinfo() to get the server's IP address. */
+        host = argv[1];
+        if ((err = getaddrinfo(host, NULL, NULL, &ai)) != 0) {
+                printf("%s\n", gai_strerror(err));
+        }
+
+        /*
+         * Set the address of serveraddr to be server's IP address and port.
+         * Be careful to ensure that the IP address and port are in network
+         * byte order.
+         */
+        bzero(&serveraddr, sizeof(serveraddr)); /* Port defaults to 0 */
+        serveraddr.sin_family = ai->ai_family;
+        serveraddr.sin_addr = ((struct sockaddr_in *) ai->ai_addr)->sin_addr;
+
+        /* Open a raw socket to the destination */
+        if ((sd = open_socket(host)) == -1) {
+                perror("open_socket() unix error");
+        } else if (sd == -2) {
+                perror("open_socket() DNS error");
+        }
+
+        /*
+         * Set the TTL value for the socket. If a packet remains out in the
+         * network for longer than the set TTL value, it will be discarded.
+         */
+        if (setsockopt(sd, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval)) != 0)
+                perror("setsockopt: failed to set TTL value");
+
+        // Ping the host
+        ping();
 
         return (0);
 }
