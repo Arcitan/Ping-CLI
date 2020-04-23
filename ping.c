@@ -41,8 +41,6 @@
 #define MIN(x, y)  ((x) > (y) ? (y) : (x))
 
 /* Global constants */
-#define MAXBUF          8192
-#define MAXLINE         8192
 #define PACKETSIZE      64
 #define PAYLOADSIZE     (PACKETSIZE - sizeof(struct icmphdr))
 #define SLEEPRATE       1
@@ -74,39 +72,49 @@ static int open_socket();
 
 static void ping();
 
-static void show_stats(int signum);
+static void sigint_handler(int signum);
+
+static void show_stats();
 
 
 /*
- * Define a custom SIGINT handler to handle the termination of the program.
+ * Define a custom SIGINT handler.
  *
  * Requires:
  *   "signum" must be the SIGINT signal.
  *
  * Effects:
- *   Catches the SIGCHLD signal from the kernel to do two things:
- *     1) Stop the ping loop, if it hasn't been already
- *     2) Output statistics about the packets sent.
+ *   Catches the SIGCHLD signal from the kernel and simply toggles the ping
+ *   loop flag off.
  *
- *   Note: we are technically using a lot of async-signal-unsafe functions
- *   here, such as printf(). However, because we know that this handler is
- *   not going to get interrupted by any other signals, it's fine that we do
- *   so.
- *
- *   Implementation largely inspired by Reference (1).
+ *   Implementation inspired by Reference (6).
  */
 static void
-show_stats(int signum)
+sigint_handler(int signum)
 {
         assert(signum == SIGINT);
 
         /* Stop the ping loop */
         pingflag = 0;
+}
 
+
+/*
+ * Requires:
+ *   None.
+ *
+ * Effects:
+ *   Prints out statistics about the packets we pinged.
+ *
+ *   Implementation inspired by Reference (1).
+ */
+static void
+show_stats()
+{
         /* Print out statistics. */
         putchar('\n');
         fflush(stdout);
-        printf("\n----%s PING Statistics----\n", hostname);
+        printf("\n----%s ping statistics----\n", hostname);
         printf("%d packets transmitted, ", nsent);
         printf("%d packets received, ", nreceived);
         if (nreceived > nsent) {
@@ -116,14 +124,11 @@ show_stats(int signum)
                     (int) (((nsent - nreceived) * 100) /
                         nsent));
         }
-        printf("round-trip (ms)  min/avg/max = %.3Lf/%.3Lf/%.3Lfn",
+        printf("rtt  min/avg/max = %.3Lf/%.3Lf/%.3Lf ms\n",
             rtt_min,
             rtt_tot / nreceived,
             rtt_max);
         fflush(stdout);
-
-        /* Terminate the program after printing out all statistics */
-        exit(0);
 }
 
 
@@ -153,6 +158,7 @@ checksum(void *b, int len)
         return result;
 }
 
+
 /*
  * Requires:
  *   "hostname" must be a valid NUL-terminated host name string.
@@ -174,6 +180,9 @@ ping()
         bool was_sent = 1;
 
 
+        /*
+         * Continue sending pings until told to stop
+         */
         while (pingflag) {
                 /* Create the ICMP packet */
                 bzero(&pckt, sizeof(pckt));
@@ -312,8 +321,8 @@ main(int argc, char **argv)
         /* Store the process ID (we'll use it in the packet) */
         pid = getpid();
 
-        /* Install show_stats() as the handler for SIGINT (ctrl-c). */
-        action.sa_handler = show_stats;
+        /* Install sigint_handler() as the handler for SIGINT (ctrl-c). */
+        action.sa_handler = sigint_handler;
         action.sa_flags = SA_RESTART;
         sigemptyset(&action.sa_mask);
         if (sigaction(SIGINT, &action, NULL) < 0)
@@ -358,8 +367,11 @@ main(int argc, char **argv)
         if (setsockopt(sd, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval)) != 0)
                 perror("setsockopt: failed to set TTL value");
 
-        // Continuously ping the host
+        /* Continuously ping the host */
         ping();
+
+        /* Print statistics once we're done */
+        show_stats();
 
         return (0);
 }
