@@ -11,6 +11,7 @@
  *   (4) https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol
  *   (5) https://opensourceforu.com/2015/03/a-guide-to-using-raw-sockets/
  *   (6) https://www.geeksforgeeks.org/internet-control-message-protocol-icmp/
+ *   (7) https://www.johndcook.com/blog/standard_deviation/
  *
  */
 #include <sys/time.h>
@@ -62,7 +63,8 @@ unsigned int nsent = 0;         /* # of packets sent */
 unsigned int nreceived = 0;     /* # of packets received */
 int pid = -1;                   /* Process ID of this process */
 int sd;                         /* Socket file descriptor */
-char *hostname, *ip;            /* Host name and IP of the destination */
+char hostname[NI_MAXHOST];      /* Host name of the destination */
+char ip[INET_ADDRSTRLEN];       /* IP of the destination */
 bool pingflag = 1;              /* Flag for the infinite ping loop */
 
 /* Function signatures */
@@ -70,7 +72,7 @@ static unsigned short checksum(void *b, int len);
 
 static int open_socket();
 
-static void ping();
+static void ping(const char *hostparam);
 
 static void sigint_handler(int signum);
 
@@ -124,7 +126,7 @@ show_stats()
                     (int) (((nsent - nreceived) * 100) /
                         nsent));
         }
-        printf("rtt  min/avg/max = %.3Lf/%.3Lf/%.3Lf ms\n",
+        printf("rtt min/avg/max = %.3Lf/%.3Lf/%.3Lf ms\n",
             rtt_min,
             rtt_tot / nreceived,
             rtt_max);
@@ -161,14 +163,14 @@ checksum(void *b, int len)
 
 /*
  * Requires:
- *   "hostname" must be a valid NUL-terminated host name string.
- *   "ip" must be a valid NUL-terminated IP address.
+ *   "hostparam" must be a valid NUL-terminated host name string.
  *
  * Effects:
- *   Pings the destination server given by "hostname" with an ICMP packet.
+ *   Continuously pings the destination server with ICMP packets and receives
+ *   the "echo reply" packets sent back.
  */
 static void
-ping()
+ping(const char *hostparam)
 {
         struct sockaddr_in clientaddr;
         struct packet pckt;
@@ -179,6 +181,10 @@ ping()
         int bytes_rec;
         bool was_sent = 1;
 
+        /* Display opening message */
+        printf("PING %s (%s) %lu(%d) bytes of data.\n", hostparam, ip,
+            PAYLOADSIZE,
+            PACKETSIZE);
 
         /*
          * Continue sending pings until told to stop
@@ -310,7 +316,9 @@ main(int argc, char **argv)
         struct addrinfo *ai;
         struct sigaction action;
         const int ttlval = TTLVAL;
+        unsigned int addrlen;
         int err;
+        char *host;
 
         /* Verify usage */
         if (argc != 2) {
@@ -336,9 +344,9 @@ main(int argc, char **argv)
         }
 
         /* Use getaddrinfo() to get the server's IP address. */
-        hostname = argv[1];
-        if ((err = getaddrinfo(hostname, NULL, NULL, &ai)) != 0) {
-                printf("%s\n", gai_strerror(err));
+        host = argv[1];
+        if ((err = getaddrinfo(host, NULL, NULL, &ai)) != 0) {
+                printf("getaddrinfo: %s\n", gai_strerror(err));
         }
 
         /*
@@ -346,15 +354,23 @@ main(int argc, char **argv)
          * Be careful to ensure that the IP address and port are in network
          * byte order.
          */
-        bzero(&serveraddr, sizeof(serveraddr)); /* Port defaults to 0 */
+        addrlen = sizeof(serveraddr);
+        bzero(&serveraddr, addrlen); /* Port defaults to 0 */
         serveraddr.sin_family = ai->ai_family;
         serveraddr.sin_addr = ((struct sockaddr_in *) ai->ai_addr)->sin_addr;
 
-        /* Get the IP address of the host */
-        ip = inet_ntoa(serveraddr.sin_addr);
+        /* Get the **actual** host name and IP address of the host */
+        if ((err = getnameinfo((struct sockaddr *) &serveraddr, addrlen,
+            hostname, NI_MAXHOST, NULL, 0, 0)) < 0) {
+                printf("getnameinfo: %s\n", gai_strerror(err));
+        }
+        if (!inet_ntop(AF_INET, &serveraddr.sin_addr, ip,
+            INET_ADDRSTRLEN)) {
+                perror("inet_ntop error");
+        }
 
         /* Open a raw socket to the destination */
-        if ((sd = open_socket(hostname)) == -1) {
+        if ((sd = open_socket()) == -1) {
                 perror("open_socket() unix error");
         } else if (sd == -2) {
                 perror("open_socket() DNS error");
@@ -368,7 +384,7 @@ main(int argc, char **argv)
                 perror("setsockopt: failed to set TTL value");
 
         /* Continuously ping the host */
-        ping();
+        ping(host);
 
         /* Print statistics once we're done */
         show_stats();
