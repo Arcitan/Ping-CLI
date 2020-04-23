@@ -56,6 +56,8 @@ int sd;                         /* Socket file descriptor */
 bool pingflag = 1;              /* Flag for the infinite ping loop */
 
 /* Function signatures */
+static unsigned short checksum(void *b, int len);
+
 static int open_socket(const char *hostname);
 
 static void ping(const char *hostname, const char *ip);
@@ -65,10 +67,12 @@ static void ping(const char *hostname, const char *ip);
  *   None.
  *
  * Effects:
- *   Computes the 1s complement checksum. Taken from Reference (2).
+ *   Computes the 1s complement checksum for IP family headers. Taken from
+ *   Reference (2).
  *
  */
-unsigned short checksum(void *b, int len)
+unsigned short
+checksum(void *b, int len)
 {
         unsigned short *buf = b;
         unsigned int sum = 0;
@@ -101,7 +105,7 @@ ping(const char *hostname, const char *ip)
         long double pckt_time, rtt;
         unsigned int clientlen = sizeof(clientaddr);
         unsigned int i;
-        int sent_cnt = 0, received_cnt = 0;
+        int bytes_rec, sent_cnt = 0, received_cnt = 0;
         bool was_sent = 1;
 
 
@@ -129,8 +133,8 @@ ping(const char *hostname, const char *ip)
                 }
 
                 /* Receive the returning packet */
-                if ((recvfrom(sd, &pckt, sizeof(pckt), 0,
-                    (struct sockaddr *) &clientaddr, &clientlen) < 0)) {
+                if ((bytes_rec = recvfrom(sd, &pckt, sizeof(pckt), 0,
+                    (struct sockaddr *) &clientaddr, &clientlen)) < 0) {
                         /*
                          * Ignore any signal interrupt errors, since that's
                          * part of normal usage (user will CTRL+C)
@@ -161,7 +165,7 @@ ping(const char *hostname, const char *ip)
                         // Print results
                         printf(
                             "%d bytes from %s (%s): icmp_seq=%d ttl=%d rtt=%Lf "
-                            "ms\n", PACKETSIZE, hostname, ip, sent_cnt, TTLVAL,
+                            "ms\n", bytes_rec, hostname, ip, sent_cnt, TTLVAL,
                             rtt);
 
                         received_cnt++;
@@ -259,6 +263,9 @@ main(int argc, char **argv)
         serveraddr.sin_family = ai->ai_family;
         serveraddr.sin_addr = ((struct sockaddr_in *) ai->ai_addr)->sin_addr;
 
+        /* Get the IP address of the host */
+        ip = inet_ntoa(serveraddr.sin_addr);
+
         /* Open a raw socket to the destination */
         if ((sd = open_socket(host)) == -1) {
                 perror("open_socket() unix error");
@@ -273,8 +280,7 @@ main(int argc, char **argv)
         if (setsockopt(sd, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval)) != 0)
                 perror("setsockopt: failed to set TTL value");
 
-        // Ping the host
-        ip = inet_ntoa(serveraddr.sin_addr);
+        // Continuously ping the host
         ping(host, ip);
 
         return (0);
