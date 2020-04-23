@@ -21,6 +21,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -59,6 +60,7 @@ struct sockaddr_in serveraddr;  /* The destination IP info */
 long double rtt_min = UINT_MAX; /* Minimum packet RTT */
 long double rtt_max = 0;        /* Maximum packet RTT */
 long double rtt_tot = 0;        /* Total packet RTT */
+long double rtt_std = 0;        /* Standard deviation of RTT */
 unsigned int nsent = 0;         /* # of packets sent */
 unsigned int nreceived = 0;     /* # of packets received */
 int pid = -1;                   /* Process ID of this process */
@@ -126,10 +128,11 @@ show_stats()
                     (int) (((nsent - nreceived) * 100) /
                         nsent));
         }
-        printf("rtt min/avg/max = %.3Lf/%.3Lf/%.3Lf ms\n",
+        printf("rtt min/avg/max/stdev = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
             rtt_min,
             rtt_tot / nreceived,
-            rtt_max);
+            rtt_max,
+            rtt_std);
         fflush(stdout);
 }
 
@@ -176,8 +179,9 @@ ping(const char *hostparam)
         struct packet pckt;
         struct timespec ts, te;
         long double pckt_time, rtt;
+        long double m = 0, s = 0, tmp_m;
         unsigned int clientlen = sizeof(clientaddr);
-        unsigned int i;
+        unsigned int i, k = 1;
         int bytes_rec;
         bool was_sent = 1;
 
@@ -237,6 +241,16 @@ ping(const char *hostparam)
                 rtt_min = MIN(rtt_min, rtt);
                 rtt_max = MAX(rtt_min, rtt);
                 rtt_tot += rtt;
+
+                /*
+                 * Compute st. dev. of a stream using Welford's method (see
+                 * Reference (7))
+                 */
+                tmp_m = m;
+                m += ((rtt - tmp_m) / k);
+                s += ((rtt - tmp_m) * (rtt - m));
+                k++;
+                rtt_std = sqrt(s / (k - 2));
 
                 /* Inspect the received packet and print out results */
                 if (was_sent) {

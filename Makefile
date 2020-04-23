@@ -1,6 +1,6 @@
 CC = cc
 CFLAGS = -std=gnu11 -Wall -Wextra -Werror -g
-LDFLAGS = -lpthread -lnsl -lrt
+LDFLAGS = -lpthread -lnsl -lrt -lm
 
 
 all: ping
