@@ -19,6 +19,8 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,13 +36,17 @@
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 
+/* Macros */
+#define MAX(x, y)  ((x) > (y) ? (x) : (y))
+#define MIN(x, y)  ((x) > (y) ? (y) : (x))
+
 /* Global constants */
 #define MAXBUF          8192
 #define MAXLINE         8192
 #define PACKETSIZE      64
 #define PAYLOADSIZE     (PACKETSIZE - sizeof(struct icmphdr))
 #define SLEEPRATE       1
-#define TTLVAL          255
+#define TTLVAL          64
 
 /* Structs */
 struct packet {
@@ -51,16 +57,75 @@ struct packet {
 /* Global variables */
 struct protoent *proto = NULL;  /* Pointer to protocol info */
 struct sockaddr_in serveraddr;  /* The destination IP info */
+long double rtt_min = UINT_MAX; /* Minimum packet RTT */
+long double rtt_max = 0;        /* Maximum packet RTT */
+long double rtt_tot = 0;        /* Total packet RTT */
+unsigned int nsent = 0;         /* # of packets sent */
+unsigned int nreceived = 0;     /* # of packets received */
 int pid = -1;                   /* Process ID of this process */
 int sd;                         /* Socket file descriptor */
+char *hostname, *ip;            /* Host name and IP of the destination */
 bool pingflag = 1;              /* Flag for the infinite ping loop */
 
 /* Function signatures */
 static unsigned short checksum(void *b, int len);
 
-static int open_socket(const char *hostname);
+static int open_socket();
 
-static void ping(const char *hostname, const char *ip);
+static void ping();
+
+static void show_stats(int signum);
+
+
+/*
+ * Define a custom SIGINT handler to handle the termination of the program.
+ *
+ * Requires:
+ *   "signum" must be the SIGINT signal.
+ *
+ * Effects:
+ *   Catches the SIGCHLD signal from the kernel to do two things:
+ *     1) Stop the ping loop, if it hasn't been already
+ *     2) Output statistics about the packets sent.
+ *
+ *   Note: we are technically using a lot of async-signal-unsafe functions
+ *   here, such as printf(). However, because we know that this handler is
+ *   not going to get interrupted by any other signals, it's fine that we do
+ *   so.
+ *
+ *   Implementation largely inspired by Reference (1).
+ */
+static void
+show_stats(int signum)
+{
+        assert(signum == SIGINT);
+
+        /* Stop the ping loop */
+        pingflag = 0;
+
+        /* Print out statistics. */
+        putchar('\n');
+        fflush(stdout);
+        printf("\n----%s PING Statistics----\n", hostname);
+        printf("%d packets transmitted, ", nsent);
+        printf("%d packets received, ", nreceived);
+        if (nreceived > nsent) {
+                printf("...huh?\n");
+        } else {
+                printf("%d%% packet loss\n",
+                    (int) (((nsent - nreceived) * 100) /
+                        nsent));
+        }
+        printf("round-trip (ms)  min/avg/max = %.3Lf/%.3Lf/%.3Lfn",
+            rtt_min,
+            rtt_tot / nreceived,
+            rtt_max);
+        fflush(stdout);
+
+        /* Terminate the program after printing out all statistics */
+        exit(0);
+}
+
 
 /*
  * Requires:
@@ -97,7 +162,7 @@ checksum(void *b, int len)
  *   Pings the destination server given by "hostname" with an ICMP packet.
  */
 static void
-ping(const char *hostname, const char *ip)
+ping()
 {
         struct sockaddr_in clientaddr;
         struct packet pckt;
@@ -105,7 +170,7 @@ ping(const char *hostname, const char *ip)
         long double pckt_time, rtt;
         unsigned int clientlen = sizeof(clientaddr);
         unsigned int i;
-        int bytes_rec, sent_cnt = 0, received_cnt = 0;
+        int bytes_rec;
         bool was_sent = 1;
 
 
@@ -117,7 +182,7 @@ ping(const char *hostname, const char *ip)
                 for (i = 0; i < sizeof(pckt.payload) - 1; i++)
                         pckt.payload[i] = i + '0';
                 pckt.payload[i] = 0;
-                pckt.hdr.un.echo.sequence = sent_cnt++;
+                pckt.hdr.un.echo.sequence = nsent++;
                 pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
 
                 sleep(SLEEPRATE);
@@ -153,6 +218,11 @@ ping(const char *hostname, const char *ip)
                     1000000.0;
                 rtt = (te.tv_sec - ts.tv_sec) * 1000.0 + pckt_time;
 
+                /* Keep track of statistics */
+                rtt_min = MIN(rtt_min, rtt);
+                rtt_max = MAX(rtt_min, rtt);
+                rtt_tot += rtt;
+
                 /* Inspect the received packet and print out results */
                 if (was_sent) {
                         // Verify packet consistency
@@ -160,15 +230,16 @@ ping(const char *hostname, const char *ip)
                                 fprintf(stderr,
                                     "packet received with ICMP type %d and code "
                                     "%d\n", pckt.hdr.type, pckt.hdr.code);
+                                continue;
                         }
 
                         // Print results
                         printf(
                             "%d bytes from %s (%s): icmp_seq=%d ttl=%d rtt=%Lf "
-                            "ms\n", bytes_rec, hostname, ip, sent_cnt, TTLVAL,
+                            "ms\n", bytes_rec, hostname, ip, nsent, TTLVAL,
                             rtt);
 
-                        received_cnt++;
+                        nreceived++;
                 }
         }
 
@@ -186,7 +257,7 @@ ping(const char *hostname, const char *ip)
  *   sets errno on a Unix error.  Returns -2 on a DNS (getaddrinfo) error.
  */
 static int
-open_socket(const char *hostname)
+open_socket()
 {
         struct addrinfo *ai;
         int err;
@@ -228,9 +299,9 @@ int
 main(int argc, char **argv)
 {
         struct addrinfo *ai;
+        struct sigaction action;
         const int ttlval = TTLVAL;
         int err;
-        char *host, *ip;
 
         /* Verify usage */
         if (argc != 2) {
@@ -241,6 +312,13 @@ main(int argc, char **argv)
         /* Store the process ID (we'll use it in the packet) */
         pid = getpid();
 
+        /* Install show_stats() as the handler for SIGINT (ctrl-c). */
+        action.sa_handler = show_stats;
+        action.sa_flags = SA_RESTART;
+        sigemptyset(&action.sa_mask);
+        if (sigaction(SIGINT, &action, NULL) < 0)
+                perror("sigaction error");
+
         /* Get the protocol */
         if ((proto = getprotobyname("ICMP")) == NULL) {
                 fprintf(stderr, "getprotobyname() failed: unknown protocol "
@@ -249,8 +327,8 @@ main(int argc, char **argv)
         }
 
         /* Use getaddrinfo() to get the server's IP address. */
-        host = argv[1];
-        if ((err = getaddrinfo(host, NULL, NULL, &ai)) != 0) {
+        hostname = argv[1];
+        if ((err = getaddrinfo(hostname, NULL, NULL, &ai)) != 0) {
                 printf("%s\n", gai_strerror(err));
         }
 
@@ -267,7 +345,7 @@ main(int argc, char **argv)
         ip = inet_ntoa(serveraddr.sin_addr);
 
         /* Open a raw socket to the destination */
-        if ((sd = open_socket(host)) == -1) {
+        if ((sd = open_socket(hostname)) == -1) {
                 perror("open_socket() unix error");
         } else if (sd == -2) {
                 perror("open_socket() DNS error");
@@ -281,7 +359,7 @@ main(int argc, char **argv)
                 perror("setsockopt: failed to set TTL value");
 
         // Continuously ping the host
-        ping(host, ip);
+        ping();
 
         return (0);
 }
