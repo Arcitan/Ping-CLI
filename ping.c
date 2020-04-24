@@ -143,7 +143,6 @@ show_stats()
                     (int) (((nsent - nreceived) * 100) /
                         nsent));
         }
-
         if (timeflag) {
                 printf("rtt min/avg/max/stddev = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
                     rtt_min,
@@ -361,7 +360,7 @@ ping()
  *   Receives an incoming ICMP "echo reply" packet back from the destination
  *   server. Computes some statistics about the packet and prints out
  *   information about receiving that packet. Returns 0 on success and -1 on
- *   any failure to receive a proper packet.
+ *   any failure to receive a proper packet. Returns 1 on a timeout error.
  */
 static int
 receive()
@@ -379,8 +378,8 @@ receive()
                 if (errno != EINTR) {
                         // Check for timeout (EAGAIN is same as EWOULDBLOCK)
                         if (errno == EAGAIN) {
-                                perror("recvfrom timed out\n");
-                                return (-1);
+                                perror("recvfrom timed out");
+                                return (1);
                         }
                         // Catch all other errors
                         perror("error in packet receive");
@@ -389,8 +388,8 @@ receive()
         }
         // Check for timeout with partially-received packet
         if (errno == EAGAIN) {
-                perror("recvfrom timed out\n");
-                return (-1);
+                perror("recvfrom timed out");
+                return (1);
         }
 
         /* Verify packet integrity */
@@ -791,7 +790,7 @@ main(int argc, char **argv)
                             nsent);
                         continue;
                 }
-                if (receive() != 0) {
+                if (receive() < 0) {
                         fprintf(stderr, "receive error\n");
                         continue;
                 }
