@@ -409,8 +409,10 @@ receive()
 
         /* Print out this packet's stats */
         pckt = (struct icmp *) (inpacket + iphdrsize);
-        printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.3Lf ms\n",
-            insize, hostname, ip, pckt->icmp_seq, TTLVAL, rtt);
+        printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d packets_lost=%d "
+               "time=%.3Lf ms\n",
+            insize, hostname, ip, pckt->icmp_seq, TTLVAL, nsent - nreceived,
+            rtt);
 
         return (0);
 }
