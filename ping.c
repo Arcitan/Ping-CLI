@@ -64,7 +64,7 @@ unsigned int nsent = 0;         /* # of packets sent */
 unsigned int nreceived = 0;     /* # of packets received */
 unsigned int outsize;           /* Size of each outgoing packet */
 unsigned int payloadsize = 56;  /* Payload size of each packet */
-unsigned int timeout = 5;       /* Timeout for waiting for packets */
+unsigned int timeout = 1;       /* Timeout for waiting for packets */
 unsigned int sleeprate = 1;     /* Time in seconds between pings */
 unsigned int ttlval = 55;       /* IP time-to-live for each packet */
 extern int errno;               /* Written to by UNIX functions */
@@ -374,13 +374,15 @@ receive()
         /* Block until a packet is received */
         if ((recvsize = recvfrom(sd, inpacket, sizeof(inpacket), 0,
             (struct sockaddr *) &serveraddr, &serverlen)) < 0) {
+                // Check for timeout (EAGAIN is same as EWOULDBLOCK)
+                if (errno == EAGAIN) {
+                        fprintf(stderr,
+                            "request time limit (%d s) exceeded\n",
+                            timeout);
+                        return (1);
+                }
                 // Ignore SIGINT interrupts, since that's expected behavior
                 if (errno != EINTR) {
-                        // Check for timeout (EAGAIN is same as EWOULDBLOCK)
-                        if (errno == EAGAIN) {
-                                perror("recvfrom timed out");
-                                return (1);
-                        }
                         // Catch all other errors
                         perror("error in packet receive");
                         return (-1);
@@ -388,7 +390,9 @@ receive()
         }
         // Check for timeout with partially-received packet
         if (errno == EAGAIN) {
-                perror("recvfrom timed out");
+                fprintf(stderr,
+                    "request time limit (%d s) exceeded\n",
+                    timeout);
                 return (1);
         }
 
