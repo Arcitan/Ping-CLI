@@ -12,8 +12,7 @@ A minimal CLI "ping" application for Linux-based systems. Accepts a hostname
 
 This application was written entirely in C for Linux-based systems, developed
  on a Windows 10 machine, and tested on the Ubuntu
-  Windows subsystem. Because this implementation depends on the `netinet
-  ` libraries, it will not work on any machine that does not have these
+  Windows subsystem. Because this implementation depends on the `netinet` libraries, it will not work on any machine that does not have these
    libraries, even if it's Unix-based. As of now, this means that this
     application will not work on MacOS; it will only work on Linux. 
 
@@ -70,9 +69,8 @@ If a packet count and deadline are both specified, and fewer than count packets
  
  Overall, I really enjoyed making this! This was my first time building a
   complete Linux-based CLI application completely from the ground-up. Though I
-   came in with knowledge of exceptional control flow, sockets/networking
-   , and basic error-handling, a lot of the other stuff necessary for this
-    project I picked up along the way. For example, I had no
+   came in with knowledge of exceptional control flow, sockets/networking, and basic error-handling, a lot of the other stuff necessary for this
+    project I had to pick up along the way. For example, I had no
 clue how to actually parse optional arguments on the command line, and I also
  didn't know how to set a timeout on a socket or properly set up an ICMP
   packet. Much of my time was spent reading documentation and man pages, as
@@ -96,7 +94,6 @@ For example, I believe the actual Unix **ping** implementation uses at least
         time, 
 refactoring my implementation to utilize different sender/receiver threads
  would be one of my top priorities.  
- 
  
 ## References 
 
