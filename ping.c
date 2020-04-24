@@ -10,7 +10,7 @@
  *   (3) https://www.tenouk.com/Module43a.html
  *   (4) https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol
  *   (5) https://opensourceforu.com/2015/03/a-guide-to-using-raw-sockets/
- *   (6) https://www.geeksforgeeks.org/internet-control-message-protocol-icmp/
+ *   (6) https://www.geeksforgeeks.org/ping-in-c/
  *   (7) https://www.johndcook.com/blog/standard_deviation/
  *
  */
