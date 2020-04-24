@@ -76,8 +76,6 @@ char outpacket[MAXPACKETSIZE];  /* Outgoing packet buffer */
 bool pingflag = 1;              /* Flag for the infinite ping loop */
 bool timeflag = 1;              /* Flag for timing statistics */
 
-// TODO: use timeflag and count
-
 /*********************************************
  * Function Prototypes
  ********************************************/
@@ -144,11 +142,14 @@ show_stats()
                     (int) (((nsent - nreceived) * 100) /
                         nsent));
         }
-        printf("rtt min/avg/max/stddev = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
-            rtt_min,
-            rtt_tot / nreceived,
-            rtt_max,
-            rtt_std);
+
+        if (timeflag) {
+                printf("rtt min/avg/max/stddev = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
+                    rtt_min,
+                    rtt_tot / nreceived,
+                    rtt_max,
+                    rtt_std);
+        }
         fflush(stdout);
 }
 
@@ -408,10 +409,13 @@ receive()
 
         /* Print out this packet's stats */
         pckt = (struct icmp *) (inpacket + iphdrsize);
-        printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d packets_lost=%d "
-               "time=%.3Lf ms\n",
-            insize, hostname, ip, pckt->icmp_seq, ttlval, nsent - nreceived,
-            rtt);
+        printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d packets_lost=%d",
+            insize, hostname, ip, pckt->icmp_seq, ttlval, nsent - nreceived);
+        if (timeflag) {
+                printf(" time=%.3Lf ms\n", rtt);
+        } else {
+                putchar('\n');
+        }
 
         return (0);
 }
@@ -660,10 +664,16 @@ parse_args(const int argc, char **argv)
                 }
         }
 
-        /* Set the outgoing packet size, and error-check "hostname" */
+        /* Do some last-minute set up and error-checking */
+        // Compute the ooutgoing packetsize
         outsize = payloadsize + sizeof(struct icmphdr);
+        // Make sure we got the destination
         if (host == NULL) {
                 goto usage_error;
+        }
+        // Only do timing if the payload is large enough
+        if (payloadsize < sizeof(struct timeval)) {
+                timeflag = 0;
         }
 
         return host;
