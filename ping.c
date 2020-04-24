@@ -674,7 +674,7 @@ parse_args(const int argc, char **argv)
                                         exit(1);
                                 }
                                 if (ttlval > 255) {
-                                        fprintf(stderr, "ttl %d out of range",
+                                        fprintf(stderr, "ttl %d out of range\n",
                                             ttlval);
                                         exit(1);
                                 }
