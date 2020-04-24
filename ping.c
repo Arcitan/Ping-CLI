@@ -15,11 +15,11 @@
  *
  */
 #include <sys/time.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 
 #include <assert.h>
 #include <errno.h>
+#include <getopt.h>
 #include <limits.h>
 #include <math.h>
 #include <signal.h>
@@ -33,34 +33,39 @@
 #include <arpa/inet.h>
 
 #include <netdb.h>
-#include <netinet/in_systm.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 
-/* Macros */
+/*********************************************
+ * Macros and Constants
+ ********************************************/
 #define MAX(x, y)  ((x) > (y) ? (x) : (y))
 #define MIN(x, y)  ((x) > (y) ? (y) : (x))
 
-/* Global constants */
 #define MAXPACKETSIZE 4096      /* Max packet size */
-#define TIMEOUT         5       /* Timeout for packet return */
-#define SLEEPRATE       1
-#define TTLVAL          64
 
-/* Global variables */
+/*********************************************
+ * Global Variables
+ ********************************************/
 struct protoent *proto = NULL;  /* Pointer to protocol info */
 struct sockaddr_in serveraddr;  /* The destination IP info */
 long double rtt_min = UINT_MAX; /* Minimum packet RTT */
 long double rtt_max = 0;        /* Maximum packet RTT */
 long double rtt_tot = 0;        /* Total packet RTT */
 long double rtt_std = 0;        /* Standard deviation of RTT */
+long double m = 0;              /* Intermediate value in Welford's method */
+long double s = 0;              /* Intermediate value in Welford's method */
+unsigned int count;             /* Limit on how many packets to send */
 unsigned int iphdrsize;         /* Size of the IP header in received packets */
 unsigned int insize;            /* Size of each incoming packet */
 unsigned int nsent = 0;         /* # of packets sent */
 unsigned int nreceived = 0;     /* # of packets received */
-unsigned int outsize = 64;      /* Size of each outgoing packet (default=64) */
-unsigned int payloadsize;       /* Payload size of each packet */
+unsigned int outsize;           /* Size of each outgoing packet */
+unsigned int payloadsize = 56;  /* Payload size of each packet */
+unsigned int timeout = 5;       /* Timeout for waiting for packets */
+unsigned int sleeprate = 1;     /* Time in seconds between pings */
+unsigned int ttlval = 55;       /* IP time-to-live for each packet */
 extern int errno;               /* Written to by UNIX functions */
 int pid = -1;                   /* Process ID of this process */
 int sd;                         /* Socket file descriptor */
@@ -69,26 +74,24 @@ char ip[INET_ADDRSTRLEN];       /* IP of the destination */
 char inpacket[MAXPACKETSIZE];   /* Incoming packet buffer */
 char outpacket[MAXPACKETSIZE];  /* Outgoing packet buffer */
 bool pingflag = 1;              /* Flag for the infinite ping loop */
+bool timeflag = 1;              /* Flag for timing statistics */
 
-/* Function signatures */
+/*********************************************
+ * Function Prototypes
+ ********************************************/
 static unsigned short checksum(void *b, int len);
-
 static long double compute_rtt();
-
 static int open_socket();
-
+static char *parse_args(const int argc, char **argv);
 static int ping();
-
 static char *pr_type(const int t);
-
 static int receive();
-
 static void sigint_handler(int signum);
-
 static void show_stats();
-
+static long int Strtol(const char *nptr, int base);
 static void tv_sub(struct timeval *out, struct timeval *in);
-
+static void update_std(long double rtt);
+static void usage(char *name);
 static int verify_packet(const unsigned int recvsize);
 
 
@@ -139,11 +142,14 @@ show_stats()
                     (int) (((nsent - nreceived) * 100) /
                         nsent));
         }
-        printf("rtt min/avg/max/stdev = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
-            rtt_min,
-            rtt_tot / nreceived,
-            rtt_max,
-            rtt_std);
+
+        if (timeflag) {
+                printf("rtt min/avg/max/stddev = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
+                    rtt_min,
+                    rtt_tot / nreceived,
+                    rtt_max,
+                    rtt_std);
+        }
         fflush(stdout);
 }
 
@@ -156,7 +162,6 @@ show_stats()
  *   Computes the 1s complement checksum for IP family headers.
  *
  *   Implementation pulled from Reference (2).
- *
  */
 unsigned short
 checksum(void *b, int len)
@@ -178,6 +183,34 @@ checksum(void *b, int len)
 
 /*
  * Requires:
+ *   "rtt" must be a valid long double.
+ *
+ * Effects:
+ *   Computes the online standard deviation of all the aggregate "rtt"'s
+ *   using Welford's method.
+ *
+ *   Implementation inspired by Reference (7).
+ */
+static void
+update_std(long double rtt)
+{
+        long double m_old = m;
+        long double var;
+
+        if (nreceived == 1) {
+                m = rtt;
+        } else {
+                m += ((rtt - m_old) / nreceived);
+                s += ((rtt - m_old) / (rtt - m));
+        }
+
+        var = nreceived > 1 ? (s / (nreceived - 1)) : 0;
+        rtt_std = sqrt(var);
+}
+
+
+/*
+ * Requires:
  *   None.
  *
  * Effects:
@@ -189,9 +222,7 @@ compute_rtt()
 {
         struct icmp *pckt;
         struct timeval *ts, te;
-        long double m = 0, rtt, s = 0, tmp_m;
-        int k = 1;
-
+        long double rtt;
 
         // Get receive time (now)
         if (gettimeofday(&te, NULL) < 0) {
@@ -202,23 +233,18 @@ compute_rtt()
         pckt = (struct icmp *) (inpacket + iphdrsize);
         ts = (struct timeval *) pckt->icmp_data;
         tv_sub(&te, ts);
-        rtt = (te.tv_sec * 1000) + ((double) te.tv_usec / 1000);
+        rtt = (te.tv_sec * 1000) + ((long double) te.tv_usec / 1000);
 
         /* Keep track of statistics */
         rtt_min = MIN(rtt_min, rtt);
-        rtt_max = MAX(rtt_min, rtt);
+        rtt_max = MAX(rtt_max, rtt);
         rtt_tot += rtt;
 
         /*
-         * Compute st. dev. of a stream using Welford's method (see
+         * Compute standard deviation of a stream using Welford's method (see
          * Reference (7))
          */
-        // TODO: fix nan variance
-        tmp_m = m;
-        m += ((rtt - tmp_m) / k);
-        s += ((rtt - tmp_m) * (rtt - m));
-        k++;
-        rtt_std = sqrt(s / (k - 2));
+        update_std(rtt);
 
         return (rtt);
 }
@@ -250,7 +276,6 @@ tv_sub(struct timeval *out, struct timeval *in)
  *
  * Effects:
  *   Converts an ICMP type into a human-readable format.
- *
  *
  * Implementation taken from Reference (1).
  */
@@ -299,7 +324,7 @@ ping()
         struct icmp *pckt;
 
         /* Wait between each packet */
-        sleep(SLEEPRATE);
+        sleep(sleeprate);
 
         /* Create the packet and fill in all the fields */
         pckt = (struct icmp *) outpacket;       // store in global buffer
@@ -384,8 +409,13 @@ receive()
 
         /* Print out this packet's stats */
         pckt = (struct icmp *) (inpacket + iphdrsize);
-        printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.3Lf ms\n",
-            insize, hostname, ip, pckt->icmp_seq, TTLVAL, rtt);
+        printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d packets_lost=%d",
+            insize, hostname, ip, pckt->icmp_seq, ttlval, nsent - nreceived);
+        if (timeflag) {
+                printf(" time=%.3Lf ms\n", rtt);
+        } else {
+                putchar('\n');
+        }
 
         return (0);
 }
@@ -416,7 +446,7 @@ verify_packet(const unsigned int recvsize)
         insize = recvsize - iphdrsize;
 
         /* Verify packet size */
-        if (insize < iphdrsize + ICMP_MINLEN) {
+        if (recvsize < iphdrsize + ICMP_MINLEN) {
                 fprintf(stderr, "packet too short (%d bytes) from %s\n",
                     recvsize, hostname);
                 return (-1);
@@ -456,7 +486,6 @@ static int
 open_socket()
 {
         struct timeval tv;
-        int ttlval = TTLVAL;
 
         /* Retrieve information about the "ICMP" protocol */
         if ((proto = getprotobyname("ICMP")) == NULL) {
@@ -484,13 +513,174 @@ open_socket()
          * return with a partial count or set "errno" to EAGAIN/EWOULDBLOCK
          * if no data is received.
          */
-        tv.tv_sec = TIMEOUT;
+        tv.tv_sec = timeout;
         tv.tv_usec = 0;
         if (setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
                 perror("setsockopt: failed to set timeout");
         }
 
         return (sd);
+}
+
+
+/*
+ * Requires:
+ *   None.
+ *
+ * Effects:
+ *   Prints usage instructions for this program.
+ */
+static void
+usage(char *name)
+{
+        printf("usage: %s [-c count] [-i interval] [-s payloadsize]"
+               " [-t ttl] [-W timeout] destination\n", name);
+}
+
+
+/*
+ * Requires:
+ *   "nptr" must be a valid NUL-terminated string.
+ *   "base" must be between 2 and 36, inclusive, or be the special value 0.
+ *
+ * Effects:
+ *   Error-handling wrapper for "strtol". Returns the (attempted) converted
+ *   value. Sets "errno" on any errors.
+ *
+ * Error-handling pulled from "man strtol(3)".
+ */
+static long int
+Strtol(const char *nptr, int base)
+{
+        long int val;
+        char *endptr;
+        errno = 0;    /* To distinguish success/failure after call */
+
+        val = strtol(nptr, &endptr, base);
+
+        /* Check for various possible errors */
+        if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
+            || (errno != 0 && val == 0)) {
+                perror("strtol");
+        }
+        if (endptr == nptr) {
+                fprintf(stderr, "No digits were found\n");
+                errno = EINVAL;
+        }
+
+        return (val);
+}
+
+
+/*
+ * Requires:
+ *   "argc" must be the number of arguments passed to "main".
+ *   "argv" must be an array of strings (arguments) passed to "main".
+ *
+ * Effects:
+ *   Parses the options/arguments of the command line and sets behavior
+ *   accordingly. Returns the "hostname" argument specified in the command
+ *   line.
+ */
+static char *
+parse_args(const int argc, char **argv)
+{
+        int c;                        // Option character
+        extern int optind;
+        char *host = NULL;
+
+        if (argc < 2) {
+                goto usage_error;
+        }
+
+        /*
+         * Process the command line arguments. The non-optional
+         */
+        while (optind < argc) {
+                if ((c = getopt(argc, argv, "c:i:s:t:W:")) != -1) {
+                        /* Optional argument, see usage for details */
+                        switch (c) {
+                        case 'c':
+                                count = Strtol(optarg, 10);
+                                if (((errno == ERANGE) || (errno == EINVAL))) {
+                                        fprintf(stderr,
+                                            "bad number of packets to "
+                                            "transmit\n");
+                                        exit(1);
+                                }
+                                break;
+
+                        case 'h':
+                                usage(argv[0]);
+                                exit(0);
+                        case 'i':
+                                sleeprate = Strtol(optarg, 10);
+                                if (((errno == ERANGE) || (errno == EINVAL))) {
+                                        fprintf(stderr,
+                                            "bad timing interval\n");
+                                        exit(1);
+                                }
+                                break;
+                        case 's':
+                                payloadsize = Strtol(optarg, 10);
+                                if ((errno == ERANGE) || (errno == EINVAL)) {
+                                        goto usage_error;
+                                }
+                                if (payloadsize >
+                                    (MAXPACKETSIZE - sizeof(struct icmphdr))) {
+                                        fprintf(stderr,
+                                            "packet size too large: %d\n",
+                                            payloadsize);
+                                        exit(1);
+                                }
+                                break;
+                        case 't':
+                                ttlval = Strtol(optarg, 10);
+                                if ((errno == ERANGE) || (errno == EINVAL))
+                                        goto usage_error;
+                                if (ttlval > 255) {
+                                        fprintf(stderr, "ttl %d out of range",
+                                            ttlval);
+                                        exit(1);
+                                }
+                                break;
+                        case 'W':
+                                timeout = Strtol(optarg, 10);
+                                if ((errno == ERANGE) || (errno == EINVAL))
+                                        goto usage_error;
+                                // Assume RCVTIMEO takes at most INT_MAX
+                                if (timeout > INT_MAX) {
+                                        fprintf(stderr, "bad linger time\n");
+                                        exit(1);
+                                }
+                                break;
+                        default:
+                                break;
+                        }
+                } else {
+                        /* Store the host argument */
+                        host = argv[optind];
+                        optind++;       // Skip to the next argument
+                }
+        }
+
+        /* Do some last-minute set up and error-checking */
+        // Compute the ooutgoing packetsize
+        outsize = payloadsize + sizeof(struct icmphdr);
+        // Make sure we got the destination
+        if (host == NULL) {
+                goto usage_error;
+        }
+        // Only do timing if the payload is large enough
+        if (payloadsize < sizeof(struct timeval)) {
+                timeflag = 0;
+        }
+
+        return host;
+
+        usage_error:
+        usage(argv[0]);
+        exit(1);
 }
 
 
@@ -513,15 +703,11 @@ main(int argc, char **argv)
         int err;
         char *host;
 
-        /* Verify usage */
-        if (argc != 2) {
-                fprintf(stderr, "usage: %s <hostname/IPv4 addr>\n", argv[0]);
+        /* Parse options and arguments */
+        if ((host = parse_args(argc, argv)) == NULL) {
+                fprintf(stderr, "parse_args returned NULL\n");
                 exit(1);
         }
-
-
-        /* TODO: Parse argv params */
-        payloadsize = outsize - sizeof(struct icmphdr);
 
         /* Store the process ID (we'll use it in the packet) */
         pid = getpid();
@@ -534,7 +720,6 @@ main(int argc, char **argv)
                 perror("sigaction error");
 
         /* Use getaddrinfo() to get the server's IP address. */
-        host = argv[1];
         if ((err = getaddrinfo(host, NULL, NULL, &ai)) != 0) {
                 printf("getaddrinfo: %s\n", gai_strerror(err));
         }
@@ -577,6 +762,10 @@ main(int argc, char **argv)
                 if (receive() != 0) {
                         fprintf(stderr, "receive error\n");
                         continue;
+                }
+                // Stop once we've reached the receiving quota
+                if (count && nreceived >= count) {
+                        break;
                 }
         }
 
