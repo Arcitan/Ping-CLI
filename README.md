@@ -64,6 +64,24 @@ RTT is computed by attaching a timestamp to outgoing packets, then
 If the packet payload size is not large enough to accomodate this timestamp, 
 timing will not be done. Further, if no packets have been received at all, 
 aggregate timing statistics will not be printed out at the end. 
+
+To compute the standard deviation of the RTT's, I oped to use Welford's 
+one-pass method for computing online variance (see Reference (7)). Because
+ the stream of incoming packets is theoretically infinite and, in practice, 
+can be considered sufficiently large enough that overflow/memory issues
+ could be of concern, I chose not to compute the variance using the standard
+  "sum of squares" method. Welford's method is preferable because not only
+   does it [perform much better than traditional methods in extreme settings,](https://www.johndcook.com/blog/2008/09/26/comparing-three-methods-of-computing-standard-deviation/)
+ it also only requires a single pass through the data. This is perfect
+for streams because we only see one data point (i.e. a packet) at a time, and
+ we cannot materialize the entire stream in memory since it is theoretically
+  infinite.  
+   Because Welford's method simply gives an _estimator_ for the
+    variance, it
+    will be slightly
+    inaccurate for small sample sizes, but it will converge to a very
+     good estimate ([up to 8 significant digits](https://www.johndcook.com/blog/2008/09/26/comparing-three-methods-of-computing-standard-deviation/))
+      as more packets come in. 
    
 If ping does not receive any reply packets at all it will exit with code 1. 
 If a packet count and deadline are both specified, and fewer than count packets
