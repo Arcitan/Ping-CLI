@@ -789,7 +789,7 @@ main(int argc, char **argv)
         tts = time(NULL);       // Record start time
         while (pingflag) {
                 // Stop once we've reached the sending quota
-                if (count && nsent >= count) {
+                if (count && (nsent >= count)) {
                         break;
                 }
                 // If a deadline is set, stop once we've reached that deadline
