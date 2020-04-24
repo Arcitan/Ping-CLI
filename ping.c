@@ -538,8 +538,9 @@ open_socket()
 static void
 usage(char *name)
 {
-        printf("usage: %s [-c count] [-h] [-i interval] [-s payloadsize]"
-               " [-t ttl] [-w deadline] [-W timeout] destination\n", name);
+        printf(
+            "usage: %s \t[-c count] [-h] [-i interval] [-s payloadsize]\n"
+            "\t\t[-t ttl] [-w deadline] [-W timeout] destination\n", name);
 }
 
 
