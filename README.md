@@ -1,49 +1,64 @@
-# Cloudflare Internship Application: Systems
+# Ping-CLI 
 
 ## What is it?
 
-Please write a small Ping CLI application for MacOS or Linux.
-The CLI app should accept a hostname or an IP address as its argument, then send ICMP "echo requests" in a loop to the target while receiving "echo reply" messages.
-It should report loss and RTT times for each sent message.
+A minimal CLI "ping" application. Accepts a hostname or an IPv4 address as its
+ argument, then
+ sends ICMP "echo requests" in a loop to the target while receiving "echo
+  reply" messages. By default, it reports loss and RTT times for each sent
+   message.
 
-Please choose from among these languages: C/C++/Go/Rust
+This application was written entirely in C for Unix-based systems. This
+ application was developed on a Windows 10 machine, and tested on the Ubuntu
+  Windows subsystem. 
+ Because this implementation employs raw sockets, it requires root privileges to
+  execute. 
 
-## Useful Links
+## Installation 
 
-- [A Tour of Go](https://tour.golang.org/welcome/1)
-- [The Rust Programming Language](https://doc.rust-lang.org/book/index.html)
+```
+$ cd this/project/root
+$ make 
+```
 
-## Requirements
+## Usage 
+``` 
+./ping   [-c count] [-h] [-i interval] [-s payloadsize]
+         [-t ttl] [-w deadline] [-W timeout] destination
+```
+To execute this application with default behavior, simply call 
+```
+$ sudo ./ping <destination> 
+```
 
-### 1. Use one of the specified languages
+By default, this application will continuously ping the destination host and
+ listen for replies. You can terminate the program any time by
+  typing `Ctrl-C` into the terminal window. This application takes a
+   number of optional arguments, and they are listed in detail below.  
 
-Please choose from among C/C++/Go/Rust. If you aren't familiar with these languages, you're not alone! Many engineers join Cloudflare without
-specific langauge experience. Please consult [A Tour of Go](https://tour.golang.org/welcome/1) or [The Rust Programming Language](https://doc.rust-lang.org/book/index.html).
 
-### 2. Build a tool with a CLI interface
+## Options 
+The following is lifted from `man ping(8)`, with minor adjustments in
+ accordance with the behavior of this version of **ping**. 
+*  `-c <count>`:  Stop after sending _count_ ECHO_REQUEST packets.
+*  `-h`: Dispays the usage message. 
+*  `-i <interval>`: Wait interval seconds between sending each packet. 
+The default is to wait for one second between each packet normally. 
+*  `-s <payloadsize>`: Specifies the number of data bytes to be sent.
+ The default is 56, which translates into 64 ICMP data bytes when combined with
+  the 8 bytes of ICMP header data.
+*  `-t <ttl>`: Set the IP time-to-live.
+*  `-w <deadline>`: Specify a timeout, in seconds, before **ping** exits
+ regardless 
+of how many packets have been sent or received.
+*  `-W <timeout>`: Time to wait for a response, in seconds. By default, this
+ is 1 second. 
+   
+If ping does not receive any reply packets at all it will exit with code 1. 
+If a packet count and deadline are both specified, and fewer than count packets
+ are received by the time the deadline has arrived, it will also exit with 
+ code 1. On other error it exits with code 2. Otherwise it exits with code 0. 
+ This makes it possible to use the exit code to see if a host is alive or not.
 
-The tool should accept as a positional terminal argument a hostname or IP address.
+ 
 
-### 3. Send ICMP "echo requests" in an infinite loop
-
-As long as the program is running it should continue to emit requests with a periodic delay.
-
-### 4. Report loss and RTT times for each message
-
-Packet loss and latency should be reported as each message received.
-
-## Submitting your project
-
-When submitting your project, you should prepare your code for upload to Greenhouse. The preferred method for doing this is to create a "ZIP archive" of your project folder: for more instructions on how to do this on Windows and Mac, see [this guide](https://www.sweetwater.com/sweetcare/articles/how-to-zip-and-unzip-files/).
-
-Please provide the source code only, a compiled binary is not necessary.
-
-## Using Libraries
-
-You may use libraries (both built-in and installed via package managers) and system calls as necessary. Please don't use the ping built-in application or a full library implementation of ping.
-
-## Extra Credit
-
-1. Add support for both IPv4 and IPv6
-2. Allow to set TTL as an argument and report the corresponding "time exceeded” ICMP messages
-3. Any additional features listed in the ping man page or which you think would be valuable
