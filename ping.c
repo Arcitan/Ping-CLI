@@ -46,7 +46,7 @@
 #define MAXPACKETSIZE 4096      /* Max packet size */
 #define TIMEOUT         5       /* Timeout for packet return */
 #define SLEEPRATE       1
-#define TTLVAL          64
+#define TTLVAL          55
 
 /* Global variables */
 struct protoent *proto = NULL;  /* Pointer to protocol info */
@@ -55,6 +55,8 @@ long double rtt_min = UINT_MAX; /* Minimum packet RTT */
 long double rtt_max = 0;        /* Maximum packet RTT */
 long double rtt_tot = 0;        /* Total packet RTT */
 long double rtt_std = 0;        /* Standard deviation of RTT */
+long double m = 0;              /* Intermediate value in Welford's method */
+long double s = 0;              /* Intermediate value in Welford's method */
 unsigned int iphdrsize;         /* Size of the IP header in received packets */
 unsigned int insize;            /* Size of each incoming packet */
 unsigned int nsent = 0;         /* # of packets sent */
@@ -88,6 +90,8 @@ static void sigint_handler(int signum);
 static void show_stats();
 
 static void tv_sub(struct timeval *out, struct timeval *in);
+
+static void update_std(long double rtt);
 
 static int verify_packet(const unsigned int recvsize);
 
@@ -139,7 +143,7 @@ show_stats()
                     (int) (((nsent - nreceived) * 100) /
                         nsent));
         }
-        printf("rtt min/avg/max/stdev = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
+        printf("rtt min/avg/max/std = %.3Lf/%.3Lf/%.3Lf/%.3Lf ms\n",
             rtt_min,
             rtt_tot / nreceived,
             rtt_max,
@@ -178,6 +182,34 @@ checksum(void *b, int len)
 
 /*
  * Requires:
+ *   "rtt" must be a valid long double.
+ *
+ * Effects:
+ *   Computes the online standard deviation of all the aggregate "rtt"'s
+ *   using Welford's method.
+ *
+ *   Implementation inspired by Reference (7).
+ */
+static void
+update_std(long double rtt)
+{
+        long double m_old = m;
+        long double var;
+
+        if (nreceived == 1) {
+                m = rtt;
+        } else {
+                m += ((rtt - m_old) / nreceived);
+                s += ((rtt - m_old) / (rtt - m));
+        }
+
+        var = nreceived > 1 ? (s / (nreceived - 1)) : 0;
+        rtt_std = sqrt(var);
+}
+
+
+/*
+ * Requires:
  *   None.
  *
  * Effects:
@@ -189,9 +221,7 @@ compute_rtt()
 {
         struct icmp *pckt;
         struct timeval *ts, te;
-        long double m = 0, rtt, s = 0, tmp_m;
-        int k = 1;
-
+        long double rtt;
 
         // Get receive time (now)
         if (gettimeofday(&te, NULL) < 0) {
@@ -202,23 +232,18 @@ compute_rtt()
         pckt = (struct icmp *) (inpacket + iphdrsize);
         ts = (struct timeval *) pckt->icmp_data;
         tv_sub(&te, ts);
-        rtt = (te.tv_sec * 1000) + ((double) te.tv_usec / 1000);
+        rtt = (te.tv_sec * 1000) + ((long double) te.tv_usec / 1000);
 
         /* Keep track of statistics */
         rtt_min = MIN(rtt_min, rtt);
-        rtt_max = MAX(rtt_min, rtt);
+        rtt_max = MAX(rtt_max, rtt);
         rtt_tot += rtt;
 
         /*
-         * Compute st. dev. of a stream using Welford's method (see
+         * Compute standard deviation of a stream using Welford's method (see
          * Reference (7))
          */
-        // TODO: fix nan variance
-        tmp_m = m;
-        m += ((rtt - tmp_m) / k);
-        s += ((rtt - tmp_m) * (rtt - m));
-        k++;
-        rtt_std = sqrt(s / (k - 2));
+        update_std(rtt);
 
         return (rtt);
 }
