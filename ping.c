@@ -382,11 +382,12 @@ receive()
                         return (1);
                 }
                 // Ignore SIGINT interrupts, since that's expected behavior
-                if (errno != EINTR) {
-                        // Catch all other errors
-                        perror("error in packet receive");
-                        return (-1);
+                if (errno == EINTR) {
+                        return (0);
                 }
+                // Catch all other errors
+                perror("error in packet receive");
+                return (-1);
         }
         // Check for timeout with partially-received packet
         if (errno == EAGAIN) {
