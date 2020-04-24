@@ -89,7 +89,7 @@ static char *pr_type(const int t);
 static int receive();
 static void sigint_handler(int signum);
 static void show_stats();
-static int Strtol(const char *nptr, int base);
+static unsigned int Strtol(const char *nptr, int base);
 static void tv_sub(struct timeval *out, struct timeval *in);
 static void update_std(long double rtt);
 static void usage(char *name);
@@ -544,12 +544,14 @@ usage(char *name)
  *   "base" must be between 2 and 36, inclusive, or be the special value 0.
  *
  * Effects:
- *   Error-handling wrapper for "strtol". Returns the (attempted) converted
- *   value. Sets "errno" on any errors.
+ *   Error-handling wrapper for "strtol". Because it will only be used to
+ *   return unsigned ints, any negative integer encountered will be treated
+ *   as an error. Returns the (attempted) converted value. Sets "errno" on
+ *   any errors.
  *
  * Error-handling pulled from "man strtol(3)".
  */
-static int
+static unsigned int
 Strtol(const char *nptr, int base)
 {
         int val;
@@ -564,8 +566,12 @@ Strtol(const char *nptr, int base)
                 perror("strtol");
         }
         if (endptr == nptr) {
-                fprintf(stderr, "No digits were found\n");
+                fprintf(stderr, "no digits were found\n");
                 errno = EINVAL;
+        }
+        if (val < 0) {
+                fprintf(stderr, "illegal negative integer\n");
+                errno = ERANGE;
         }
 
         return (val);
@@ -625,7 +631,8 @@ parse_args(const int argc, char **argv)
                         case 's':
                                 payloadsize = Strtol(optarg, 10);
                                 if ((errno == ERANGE) || (errno == EINVAL)) {
-                                        goto usage_error;
+                                        fprintf(stderr, "bad packet size\n");
+                                        exit(1);
                                 }
                                 if (payloadsize >
                                     (MAXPACKETSIZE - sizeof(struct icmphdr))) {
@@ -637,8 +644,10 @@ parse_args(const int argc, char **argv)
                                 break;
                         case 't':
                                 ttlval = Strtol(optarg, 10);
-                                if ((errno == ERANGE) || (errno == EINVAL))
-                                        goto usage_error;
+                                if ((errno == ERANGE) || (errno == EINVAL)) {
+                                        fprintf(stderr, "bad time-to-live\n");
+                                        exit(1);
+                                }
                                 if (ttlval > 255) {
                                         fprintf(stderr, "ttl %d out of range",
                                             ttlval);
