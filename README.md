@@ -58,6 +58,12 @@ The default is to wait for one second between each packet normally.
 of how many packets have been sent or received.
 *  `-W <timeout>`: Time to wait for a response, in seconds. By default, this
  is 1 second. 
+ 
+RTT is computed by attaching a timestamp to outgoing packets, then
+ taking the difference between receive time and incoming packets' timestamps. 
+If the packet payload size is not large enough to accomodate this timestamp, 
+timing will not be done. Further, if no packets have been received at all, 
+aggregate timing statistics will not be printed out at the end. 
    
 If ping does not receive any reply packets at all it will exit with code 1. 
 If a packet count and deadline are both specified, and fewer than count packets
