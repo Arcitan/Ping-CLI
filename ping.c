@@ -580,7 +580,7 @@ Strtol(const char *nptr, int base)
  *
  * Effects:
  *   Parses the options/arguments of the command line and sets behavior
- *   accordingly. Returns the "hostname" argument specified in the command
+ *   accordingly. Returns the <destination> argument specified in the command
  *   line.
  */
 static char *
@@ -590,6 +590,7 @@ parse_args(const int argc, char **argv)
         extern int optind;
         char *host = NULL;
 
+        /* Must always specify <destination> */
         if (argc < 2) {
                 goto usage_error;
         }
@@ -611,7 +612,6 @@ parse_args(const int argc, char **argv)
                                         exit(1);
                                 }
                                 break;
-
                         case 'h':
                                 usage(argv[0]);
                                 exit(0);
@@ -799,6 +799,7 @@ main(int argc, char **argv)
 
         /* Return code (1) if there's no reply from the host */
         if (nreceived == 0) {
+                timeflag = 0;   // no point in timing nothing
                 exitcode = 1;
         }
 
