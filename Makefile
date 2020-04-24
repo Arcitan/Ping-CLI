@@ -1,5 +1,5 @@
 CC = cc
-CFLAGS = -std=gnu11 -Wall -Wextra -Werror -g
+CFLAGS = -std=gnu11 -Wall -Wextra -Werror -O3 -g
 LDFLAGS = -lpthread -lnsl -lrt -lm
 
 
