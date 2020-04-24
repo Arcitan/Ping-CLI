@@ -76,6 +76,8 @@ char outpacket[MAXPACKETSIZE];  /* Outgoing packet buffer */
 bool pingflag = 1;              /* Flag for the infinite ping loop */
 bool timeflag = 1;              /* Flag for timing statistics */
 
+// TODO: use timeflag and count
+
 /*********************************************
  * Function Prototypes
  ********************************************/
@@ -527,8 +529,8 @@ open_socket()
 static void
 usage(char *name)
 {
-        printf("usage: %s destination [-i interval] [-s payloadsize]"
-               " [-t ttl] [-W timeout]\n", name);
+        printf("usage: %s [-c count] [-i interval] [-s payloadsize]"
+               " [-t ttl] [-W timeout] destination\n", name);
 }
 
 
@@ -591,9 +593,19 @@ parse_args(const int argc, char **argv)
          * Process the command line arguments. The non-optional
          */
         while (optind < argc) {
-                if ((c = getopt(argc, argv, "i:s:t:W:")) != -1) {
+                if ((c = getopt(argc, argv, "c:i:s:t:W:")) != -1) {
                         /* Optional argument, see usage for details */
                         switch (c) {
+                        case 'c':
+                                count = Strtol(optarg, 10);
+                                if (((errno == ERANGE) || (errno == EINVAL))) {
+                                        fprintf(stderr,
+                                            "bad number of packets to "
+                                            "transmit\n");
+                                        exit(1);
+                                }
+                                break;
+
                         case 'h':
                                 usage(argv[0]);
                                 exit(0);
@@ -639,7 +651,7 @@ parse_args(const int argc, char **argv)
                                 }
                                 break;
                         default:
-                                goto usage_error;
+                                break;
                         }
                 } else {
                         /* Store the host argument */
@@ -740,6 +752,10 @@ main(int argc, char **argv)
                 if (receive() != 0) {
                         fprintf(stderr, "receive error\n");
                         continue;
+                }
+                // Stop once we've reached the receiving quota
+                if (count && nreceived >= count) {
+                        break;
                 }
         }
 
