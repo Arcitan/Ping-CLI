@@ -57,6 +57,7 @@ long double rtt_std = 0;        /* Standard deviation of RTT */
 long double m = 0;              /* Intermediate value in Welford's method */
 long double s = 0;              /* Intermediate value in Welford's method */
 unsigned int count;             /* Limit on how many packets to send */
+unsigned int deadline;          /* Deadline to keep looping */
 unsigned int iphdrsize;         /* Size of the IP header in received packets */
 unsigned int insize;            /* Size of each incoming packet */
 unsigned int nsent = 0;         /* # of packets sent */
@@ -88,7 +89,7 @@ static char *pr_type(const int t);
 static int receive();
 static void sigint_handler(int signum);
 static void show_stats();
-static long int Strtol(const char *nptr, int base);
+static int Strtol(const char *nptr, int base);
 static void tv_sub(struct timeval *out, struct timeval *in);
 static void update_std(long double rtt);
 static void usage(char *name);
@@ -533,8 +534,8 @@ open_socket()
 static void
 usage(char *name)
 {
-        printf("usage: %s [-c count] [-i interval] [-s payloadsize]"
-               " [-t ttl] [-W timeout] destination\n", name);
+        printf("usage: %s [-c count] [-h help] [-i interval] [-s payloadsize]"
+               " [-t ttl] [-w deadline] [-W timeout] destination\n", name);
 }
 
 
@@ -549,17 +550,17 @@ usage(char *name)
  *
  * Error-handling pulled from "man strtol(3)".
  */
-static long int
+static int
 Strtol(const char *nptr, int base)
 {
-        long int val;
+        int val;
         char *endptr;
         errno = 0;    /* To distinguish success/failure after call */
 
         val = strtol(nptr, &endptr, base);
 
         /* Check for various possible errors */
-        if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
+        if ((errno == ERANGE && (val == INT_MAX || val == INT_MIN))
             || (errno != 0 && val == 0)) {
                 perror("strtol");
         }
@@ -594,10 +595,11 @@ parse_args(const int argc, char **argv)
         }
 
         /*
-         * Process the command line arguments. The non-optional
+         * Process the command line arguments. Per usage, all optional
+         * arguments must come **before** the required <destination> argument!
          */
         while (optind < argc) {
-                if ((c = getopt(argc, argv, "c:i:s:t:W:")) != -1) {
+                if ((c = getopt(argc, argv, "c:hi:s:t:w:W:")) != -1) {
                         /* Optional argument, see usage for details */
                         switch (c) {
                         case 'c':
@@ -644,18 +646,22 @@ parse_args(const int argc, char **argv)
                                         exit(1);
                                 }
                                 break;
+                        case 'w':
+                                deadline = Strtol(optarg, 10);
+                                if ((errno == ERANGE) || (errno == EINVAL)) {
+                                        fprintf(stderr, "bad wait time\n");
+                                        exit(1);
+                                }
+                                break;
                         case 'W':
                                 timeout = Strtol(optarg, 10);
-                                if ((errno == ERANGE) || (errno == EINVAL))
-                                        goto usage_error;
-                                // Assume RCVTIMEO takes at most INT_MAX
-                                if (timeout > INT_MAX) {
+                                if ((errno == ERANGE) || (errno == EINVAL)) {
                                         fprintf(stderr, "bad linger time\n");
                                         exit(1);
                                 }
                                 break;
                         default:
-                                break;
+                                goto usage_error;
                         }
                 } else {
                         /* Store the host argument */
@@ -665,7 +671,7 @@ parse_args(const int argc, char **argv)
         }
 
         /* Do some last-minute set up and error-checking */
-        // Compute the ooutgoing packetsize
+        // Compute the outgoing packetsize
         outsize = payloadsize + sizeof(struct icmphdr);
         // Make sure we got the destination
         if (host == NULL) {
@@ -692,7 +698,13 @@ parse_args(const int argc, char **argv)
  *   Continually sends ICMP "echo requests" in an infinite loop with a
  *   periodic delay between each request. Upon receiving an "echo reply"
  *   message back from the server, it reports the loss and RTT times for each
- *   message received. It continues to do this until the program is terminated.
+ *   message received. It continues to do this until the program is
+ *   terminated. If any optional arguments are specified, then behavior is
+ *   adjusted accordingly. If ping does not receive any reply packets at all
+ *   it will exit with code 1. If a packet count and deadline are both
+ *   specified, and fewer than count packets are received by the time the
+ *   deadline has arrived, it will also exit with code 1. On other error it
+ *   exits with code 2. Otherwise it exits with code 0.
  */
 int
 main(int argc, char **argv)
@@ -700,13 +712,14 @@ main(int argc, char **argv)
         struct addrinfo *ai;
         struct sigaction action;
         unsigned int addrlen;
-        int err;
+        time_t tts;
+        int err, exitcode = 0;
         char *host;
 
         /* Parse options and arguments */
         if ((host = parse_args(argc, argv)) == NULL) {
                 fprintf(stderr, "parse_args returned NULL\n");
-                exit(1);
+                exit(2);
         }
 
         /* Store the process ID (we'll use it in the packet) */
@@ -716,12 +729,15 @@ main(int argc, char **argv)
         action.sa_handler = sigint_handler;
         action.sa_flags = SA_RESTART;
         sigemptyset(&action.sa_mask);
-        if (sigaction(SIGINT, &action, NULL) < 0)
+        if (sigaction(SIGINT, &action, NULL) < 0) {
                 perror("sigaction error");
+                exit(2);
+        }
 
         /* Use getaddrinfo() to get the server's IP address. */
         if ((err = getaddrinfo(host, NULL, NULL, &ai)) != 0) {
-                printf("getaddrinfo: %s\n", gai_strerror(err));
+                fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
+                exit(2);
         }
 
         /*
@@ -738,24 +754,40 @@ main(int argc, char **argv)
         /* Get the **actual** host name and IP address of the host */
         if ((err = getnameinfo((struct sockaddr *) &serveraddr, addrlen,
             hostname, NI_MAXHOST, NULL, 0, 0)) < 0) {
-                printf("getnameinfo: %s\n", gai_strerror(err));
+                fprintf(stderr, "getnameinfo: %s\n", gai_strerror(err));
+                exit(2);
         }
         if (!inet_ntop(AF_INET, &serveraddr.sin_addr, ip,
             INET_ADDRSTRLEN)) {
                 perror("inet_ntop error");
+                exit(2);
         }
 
         /* Open a raw socket to the destination */
         if ((sd = open_socket()) == -1) {
                 perror("open_socket() unix error");
+                exit(2);
         }
 
         /* Continuously ping the host */
         printf("PING %s (%s) %d(%d) bytes of data\n", host, ip, payloadsize,
             outsize);
+        tts = time(NULL);       // Record start time
         while (pingflag) {
+                // Stop once we've reached the sending quota
+                if (count && nsent >= count) {
+                        break;
+                }
+                // If a deadline is set, stop once we've reached that deadline
+                if (deadline && ((time(NULL) - tts) >= deadline)) {
+                        if (count && (nreceived < count))
+                                exitcode = 1;
+                        break;
+                }
+
                 if (ping() != 0) {
-                        fprintf(stderr, "ping failed to send packet %d\n",
+                        fprintf(stderr,
+                            "ping failed to send packet %d\n",
                             nsent);
                         continue;
                 }
@@ -763,10 +795,11 @@ main(int argc, char **argv)
                         fprintf(stderr, "receive error\n");
                         continue;
                 }
-                // Stop once we've reached the receiving quota
-                if (count && nreceived >= count) {
-                        break;
-                }
+        }
+
+        /* Return code (1) if there's no reply from the host */
+        if (nreceived == 0) {
+                exitcode = 1;
         }
 
         /* Print statistics once we're done */
@@ -779,5 +812,5 @@ main(int argc, char **argv)
         freeaddrinfo(ai);
         close(sd);
 
-        return (0);
+        return (exitcode);
 }
