@@ -43,16 +43,10 @@
 #define MIN(x, y)  ((x) > (y) ? (y) : (x))
 
 /* Global constants */
-#define PACKETSIZE      64
-#define PAYLOADSIZE     (PACKETSIZE - sizeof(struct icmphdr))
+#define MAXPACKETSIZE 4096      /* Max packet size */
+#define TIMEOUT         5       /* Timeout for packet return */
 #define SLEEPRATE       1
 #define TTLVAL          64
-
-/* Structs */
-struct packet {
-        struct icmphdr hdr;
-        char payload[PAYLOADSIZE];
-};
 
 /* Global variables */
 struct protoent *proto = NULL;  /* Pointer to protocol info */
@@ -61,24 +55,41 @@ long double rtt_min = UINT_MAX; /* Minimum packet RTT */
 long double rtt_max = 0;        /* Maximum packet RTT */
 long double rtt_tot = 0;        /* Total packet RTT */
 long double rtt_std = 0;        /* Standard deviation of RTT */
+unsigned int iphdrsize;         /* Size of the IP header in received packets */
+unsigned int insize;            /* Size of each incoming packet */
 unsigned int nsent = 0;         /* # of packets sent */
 unsigned int nreceived = 0;     /* # of packets received */
+unsigned int outsize = 64;      /* Size of each outgoing packet (default=64) */
+unsigned int payloadsize;       /* Payload size of each packet */
+extern int errno;               /* Written to by UNIX functions */
 int pid = -1;                   /* Process ID of this process */
 int sd;                         /* Socket file descriptor */
 char hostname[NI_MAXHOST];      /* Host name of the destination */
 char ip[INET_ADDRSTRLEN];       /* IP of the destination */
+char inpacket[MAXPACKETSIZE];   /* Incoming packet buffer */
+char outpacket[MAXPACKETSIZE];  /* Outgoing packet buffer */
 bool pingflag = 1;              /* Flag for the infinite ping loop */
 
 /* Function signatures */
 static unsigned short checksum(void *b, int len);
 
+static long double compute_rtt();
+
 static int open_socket();
 
-static void ping(const char *hostparam);
+static int ping();
+
+static char *pr_type(const int t);
+
+static int receive();
 
 static void sigint_handler(int signum);
 
 static void show_stats();
+
+static void tv_sub(struct timeval *out, struct timeval *in);
+
+static int verify_packet(const unsigned int recvsize);
 
 
 /*
@@ -139,11 +150,12 @@ show_stats()
 
 /*
  * Requires:
- *   None.
+ *   "len" must be the size of the buffer pointed to by "b".
  *
  * Effects:
- *   Computes the 1s complement checksum for IP family headers. Taken from
- *   Reference (2).
+ *   Computes the 1s complement checksum for IP family headers.
+ *
+ *   Implementation pulled from Reference (2).
  *
  */
 unsigned short
@@ -166,112 +178,267 @@ checksum(void *b, int len)
 
 /*
  * Requires:
+ *   None.
+ *
+ * Effects:
+ *   Computes the round-trip delay time of a packet. Returns the round-trip
+ *   delay time (rtt) on success, and -1 on any failures.
+ */
+static long double
+compute_rtt()
+{
+        struct icmp *pckt;
+        struct timeval *ts, te;
+        long double m = 0, rtt, s = 0, tmp_m;
+        int k = 1;
+
+
+        // Get receive time (now)
+        if (gettimeofday(&te, NULL) < 0) {
+                perror("receive: gettimeofday");
+                return (-1);
+        }
+        // Get send time (stored in packet)
+        pckt = (struct icmp *) (inpacket + iphdrsize);
+        ts = (struct timeval *) pckt->icmp_data;
+        tv_sub(&te, ts);
+        rtt = (te.tv_sec * 1000) + ((double) te.tv_usec / 1000);
+
+        /* Keep track of statistics */
+        rtt_min = MIN(rtt_min, rtt);
+        rtt_max = MAX(rtt_min, rtt);
+        rtt_tot += rtt;
+
+        /*
+         * Compute st. dev. of a stream using Welford's method (see
+         * Reference (7))
+         */
+        // TODO: fix nan variance
+        tmp_m = m;
+        m += ((rtt - tmp_m) / k);
+        s += ((rtt - tmp_m) * (rtt - m));
+        k++;
+        rtt_std = sqrt(s / (k - 2));
+
+        return (rtt);
+}
+
+
+/*
+ * Requires:
+ *   "out" and "in" must both be pointers to valid struct timevals.
+ *
+ * Effects:
+ *   Computes "out" - "in", and stores the difference in time in "out".
+ *
+ * Implementation taken from Reference (1).
+ */
+static void
+tv_sub(struct timeval *out, struct timeval *in)
+{
+        if ((out->tv_usec -= in->tv_usec) < 0) {
+                out->tv_sec--;
+                out->tv_usec += 1000000;
+        }
+        out->tv_sec -= in->tv_sec;
+}
+
+
+/*
+ * Requires:
+ *   "t" is an ICMP header type.
+ *
+ * Effects:
+ *   Converts an ICMP type into a human-readable format.
+ *
+ *
+ * Implementation taken from Reference (1).
+ */
+static char *
+pr_type(const int t)
+{
+        static char *ttab[] = {
+            "Echo Reply",
+            "ICMP 1",
+            "ICMP 2",
+            "Dest Unreachable",
+            "Source Quench",
+            "Redirect",
+            "ICMP 6",
+            "ICMP 7",
+            "Echo",
+            "ICMP 9",
+            "ICMP 10",
+            "Time Exceeded",
+            "Parameter Problem",
+            "Timestamp",
+            "Timestamp Reply",
+            "Info Request",
+            "Info Reply"
+        };
+
+        if (t < 0 || t > 16)
+                return ("OUT-OF-RANGE");
+
+        return (ttab[t]);
+}
+
+
+/*
+ * Requires:
  *   "hostparam" must be a valid NUL-terminated host name string.
  *
  * Effects:
  *   Continuously pings the destination server with ICMP packets and receives
- *   the "echo reply" packets sent back.
+ *   the "echo reply" packets sent back. Returns 0 on success and -1 if
+ *   sending was unsuccessful.
  */
-static void
-ping(const char *hostparam)
+static int
+ping()
 {
-        struct sockaddr_in clientaddr;
-        struct packet pckt;
-        struct timespec ts, te;
-        long double pckt_time, rtt;
-        long double m = 0, s = 0, tmp_m;
-        unsigned int clientlen = sizeof(clientaddr);
-        unsigned int i, k = 1;
-        int bytes_rec;
-        bool was_sent = 1;
+        struct icmp *pckt;
 
-        /* Display opening message */
-        printf("PING %s (%s) %lu(%d) bytes of data.\n", hostparam, ip,
-            PAYLOADSIZE,
-            PACKETSIZE);
+        /* Wait between each packet */
+        sleep(SLEEPRATE);
 
-        /*
-         * Continue sending pings until told to stop
-         */
-        while (pingflag) {
-                /* Create the ICMP packet */
-                bzero(&pckt, sizeof(pckt));
-                pckt.hdr.type = ICMP_ECHO;
-                pckt.hdr.un.echo.id = pid;
-                for (i = 0; i < sizeof(pckt.payload) - 1; i++)
-                        pckt.payload[i] = i + '0';
-                pckt.payload[i] = 0;
-                pckt.hdr.un.echo.sequence = nsent++;
-                pckt.hdr.checksum = checksum(&pckt, sizeof(pckt));
+        /* Create the packet and fill in all the fields */
+        pckt = (struct icmp *) outpacket;       // store in global buffer
+        bzero(pckt, sizeof(outpacket));         // fields default to 0
+        pckt->icmp_type = ICMP_ECHO;
+        pckt->icmp_seq = ++nsent;               // label w/ packet #
+        pckt->icmp_id = pid;                    // label w/ sender PID
+        // store send time as the payload
+        if (gettimeofday((struct timeval *) pckt->icmp_data, NULL) < 0) {
+                perror("ping: gettimeofday");
+                return (-1);
+        }
+        // compute ICMP checksum
+        pckt->icmp_cksum = checksum(pckt, outsize);
 
-                sleep(SLEEPRATE);
-
-                /* Send the packet */
-                clock_gettime(CLOCK_MONOTONIC, &ts);
-                if (sendto(sd, &pckt, sizeof(pckt), 0,
-                    (struct sockaddr *) &serveraddr,
-                    sizeof(serveraddr)) <= 0) {
-                        perror("sendto");
-                        // Mark packet as not sent
-                        was_sent = 0;
-                }
-
-                /* Receive the returning packet */
-                if ((bytes_rec = recvfrom(sd, &pckt, sizeof(pckt), 0,
-                    (struct sockaddr *) &clientaddr, &clientlen)) < 0) {
-                        /*
-                         * Ignore any signal interrupt errors, since that's
-                         * part of normal usage (user will CTRL+C)
-                         */
-                        if (!(errno = EINTR)) {
-                                perror("ping: recvfrom");
-                        }
-
-                        // Try next packet since we failed to receive this one
-                        continue;
-                }
-
-                /* Compute elapsed time between sending and receiving */
-                clock_gettime(CLOCK_MONOTONIC, &te);
-                pckt_time = ((double) (te.tv_nsec - ts.tv_nsec)) /
-                    1000000.0;
-                rtt = (te.tv_sec - ts.tv_sec) * 1000.0 + pckt_time;
-
-                /* Keep track of statistics */
-                rtt_min = MIN(rtt_min, rtt);
-                rtt_max = MAX(rtt_min, rtt);
-                rtt_tot += rtt;
-
-                /*
-                 * Compute st. dev. of a stream using Welford's method (see
-                 * Reference (7))
-                 */
-                tmp_m = m;
-                m += ((rtt - tmp_m) / k);
-                s += ((rtt - tmp_m) * (rtt - m));
-                k++;
-                rtt_std = sqrt(s / (k - 2));
-
-                /* Inspect the received packet and print out results */
-                if (was_sent) {
-                        // Verify packet consistency
-                        if (pckt.hdr.code != ICMP_ECHOREPLY) {
-                                fprintf(stderr,
-                                    "packet received with ICMP type %d and code "
-                                    "%d\n", pckt.hdr.type, pckt.hdr.code);
-                                continue;
-                        }
-
-                        // Print results
-                        printf(
-                            "%d bytes from %s (%s): icmp_seq=%d ttl=%d rtt=%Lf "
-                            "ms\n", bytes_rec, hostname, ip, nsent, TTLVAL,
-                            rtt);
-
-                        nreceived++;
-                }
+        /* Send the packet */
+        if (sendto(sd, outpacket, outsize, 0, (struct sockaddr *)
+            &serveraddr, sizeof(serveraddr)) < 0) {
+                perror("ping: sendto");
+                nsent--;
+                return (-1);
         }
 
+        return (0);
+}
+
+
+/*
+ * Requires:
+ *   None.
+ *
+ * Effects:
+ *   Receives an incoming ICMP "echo reply" packet back from the destination
+ *   server. Computes some statistics about the packet and prints out
+ *   information about receiving that packet. Returns 0 on success and -1 on
+ *   any failure to receive a proper packet.
+ */
+static int
+receive()
+{
+        struct icmp *pckt;
+        socklen_t serverlen;
+        long double rtt;
+        int recvsize;
+        serverlen = sizeof(serveraddr);
+
+        /* Block until a packet is received */
+        if ((recvsize = recvfrom(sd, inpacket, sizeof(inpacket), 0,
+            (struct sockaddr *) &serveraddr, &serverlen)) < 0) {
+                // Ignore SIGINT interrupts, since that's expected behavior
+                if (errno != EINTR) {
+                        // Check for timeout (EAGAIN is same as EWOULDBLOCK)
+                        if (errno == EAGAIN) {
+                                perror("recvfrom timed out\n");
+                                return (-1);
+                        }
+                        // Catch all other errors
+                        perror("error in packet receive");
+                        return (-1);
+                }
+        }
+        // Check for timeout with partially-received packet
+        if (errno == EAGAIN) {
+                perror("recvfrom timed out\n");
+                return (-1);
+        }
+
+        /* Verify packet integrity */
+        if (verify_packet(recvsize) < 0) {
+                fprintf(stderr, "verify_packet error\n");
+                return (-1);
+        }
+
+        /* Count this packet as received */
+        nreceived++;
+
+        /* Compute elapsed time between sending and receiving */
+        if ((rtt = compute_rtt()) < 0) {
+                fprintf(stderr, "compute_rtt error\n");
+                return (-1);
+        }
+
+        /* Print out this packet's stats */
+        pckt = (struct icmp *) (inpacket + iphdrsize);
+        printf("%d bytes from %s (%s): icmp_seq=%d ttl=%d time=%.3Lf ms\n",
+            insize, hostname, ip, pckt->icmp_seq, TTLVAL, rtt);
+
+        return (0);
+}
+
+
+/*
+ * Requires:
+ *   "recvsize" must be the size of the packet received by recvfrom().
+ *
+ * Effects:
+ *   Verifies the integrity of the received packet. Expects it to be an ICMP
+ *   "echo reply" packet. Returns -1 on any error or malformed packet.
+ *
+ *   Packet integrity checking inspired by Reference (1).
+ */
+static int
+verify_packet(const unsigned int recvsize)
+{
+        struct ip *hdr;
+        struct icmp *pckt;
+
+        /* Get header and header size */
+        hdr = (struct ip *) inpacket;
+        // ip_hl is # of DWORDS (32 bits), so convert to # of bytes (8 bits)
+        iphdrsize = hdr->ip_hl << 2;
+        /* Get the actual packet */
+        pckt = (struct icmp *) (inpacket + iphdrsize);
+        insize = recvsize - iphdrsize;
+
+        /* Verify packet size */
+        if (insize < iphdrsize + ICMP_MINLEN) {
+                fprintf(stderr, "packet too short (%d bytes) from %s\n",
+                    recvsize, hostname);
+                return (-1);
+        }
+
+        /* Verify packet type */
+        if (pckt->icmp_type != ICMP_ECHOREPLY) {
+                fprintf(stderr, "type error: %d bytes from %s: icmp_type=%d "
+                                "(%s) icmp_code=%d\n",
+                    recvsize, hostname,
+                    pckt->icmp_type, pr_type(pckt->icmp_type),
+                    pckt->icmp_code);
+                return (-1);
+        }
+
+        /* Verify packet origin */
+        if (pckt->icmp_id != pid) {
+                fprintf(stderr, "wrong packet id: (%d)\n", pckt->icmp_id);
+                return (-1);
+        }
+
+        return (0);
 }
 
 
@@ -288,6 +455,9 @@ ping(const char *hostparam)
 static int
 open_socket()
 {
+        struct timeval tv;
+        int ttlval = TTLVAL;
+
         /* Retrieve information about the "ICMP" protocol */
         if ((proto = getprotobyname("ICMP")) == NULL) {
                 fprintf(stderr, "failed to retrieve ICMP protocol\n");
@@ -298,6 +468,26 @@ open_socket()
         if ((sd = socket(AF_INET, SOCK_RAW, proto->p_proto)) < 0) {
                 fprintf(stderr, "failed to create socket\n");
                 return (-1);
+        }
+
+        /*
+         * Set the TTL value for the socket. If a packet remains out in the
+         * network for longer than the set TTL value, it will be discarded.
+         */
+        if (setsockopt(sd, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval)) != 0) {
+                perror("setsockopt: failed to set TTL value");
+        }
+
+        /*
+         * Set the timeout value for receive operations. If a receive
+         * operation blocks for longer than the specified timeout, it will
+         * return with a partial count or set "errno" to EAGAIN/EWOULDBLOCK
+         * if no data is received.
+         */
+        tv.tv_sec = TIMEOUT;
+        tv.tv_usec = 0;
+        if (setsockopt(sd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+                perror("setsockopt: failed to set timeout");
         }
 
         return (sd);
@@ -319,16 +509,19 @@ main(int argc, char **argv)
 {
         struct addrinfo *ai;
         struct sigaction action;
-        const int ttlval = TTLVAL;
         unsigned int addrlen;
         int err;
         char *host;
 
         /* Verify usage */
         if (argc != 2) {
-                fprintf(stderr, "usage: %s <host>\n", argv[0]);
+                fprintf(stderr, "usage: %s <hostname/IPv4 addr>\n", argv[0]);
                 exit(1);
         }
+
+
+        /* TODO: Parse argv params */
+        payloadsize = outsize - sizeof(struct icmphdr);
 
         /* Store the process ID (we'll use it in the packet) */
         pid = getpid();
@@ -356,6 +549,7 @@ main(int argc, char **argv)
         serveraddr.sin_family = ai->ai_family;
         serveraddr.sin_addr = ((struct sockaddr_in *) ai->ai_addr)->sin_addr;
 
+
         /* Get the **actual** host name and IP address of the host */
         if ((err = getnameinfo((struct sockaddr *) &serveraddr, addrlen,
             hostname, NI_MAXHOST, NULL, 0, 0)) < 0) {
@@ -371,22 +565,30 @@ main(int argc, char **argv)
                 perror("open_socket() unix error");
         }
 
-        /*
-         * Set the TTL value for the socket. If a packet remains out in the
-         * network for longer than the set TTL value, it will be discarded.
-         */
-        if (setsockopt(sd, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval)) != 0)
-                perror("setsockopt: failed to set TTL value");
-
         /* Continuously ping the host */
-        ping(host);
+        printf("PING %s (%s) %d(%d) bytes of data\n", host, ip, payloadsize,
+            outsize);
+        while (pingflag) {
+                if (ping() != 0) {
+                        fprintf(stderr, "ping failed to send packet %d\n",
+                            nsent);
+                        continue;
+                }
+                if (receive() != 0) {
+                        fprintf(stderr, "receive error\n");
+                        continue;
+                }
+        }
 
         /* Print statistics once we're done */
         show_stats();
 
-        /* Cleanup and exit */
-        close(sd);
+        /*
+         * Cleanup and exit. Normally we would error-check these, but since
+         * the program is terminating anyway we can opt not to.
+         */
         freeaddrinfo(ai);
+        close(sd);
 
         return (0);
 }
