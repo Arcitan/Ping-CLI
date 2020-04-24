@@ -2,17 +2,21 @@
 
 ## What is it?
 
-A minimal CLI "ping" application. Accepts a hostname or an IPv4 address as its
+A minimal CLI "ping" application for Linux-based systems. Accepts a hostname
+ or an IPv4
+ address as its
  argument, then
  sends ICMP "echo requests" in a loop to the target while receiving "echo
   reply" messages. By default, it reports loss and RTT times for each sent
    message.
 
-This application was written entirely in C for Unix-based systems. This
- application was developed on a Windows 10 machine, and tested on the Ubuntu
-  Windows subsystem. 
- Because this implementation employs raw sockets, it requires root privileges to
-  execute. 
+This application was written entirely in C for Linux-based systems, developed
+ on a Windows 10 machine, and tested on the Ubuntu
+  Windows subsystem. Because this implementation depends on the `netinet
+  ` libraries, it will not work on any machine that does not have these
+   libraries, even if it's Unix-based. As of now, this means that this
+    application will not work on MacOS; it will only work on Linux. 
+
 
 ## Installation 
 
@@ -23,9 +27,11 @@ $ make
 
 ## Usage 
 ``` 
-./ping   [-c count] [-h] [-i interval] [-s payloadsize]
+$ ./ping   [-c count] [-h] [-i interval] [-s payloadsize]
          [-t ttl] [-w deadline] [-W timeout] destination
 ```
+ Because this implementation employs raw sockets, it requires root privileges to
+  execute. 
 To execute this application with default behavior, simply call 
 ```
 $ sudo ./ping <destination> 
@@ -63,7 +69,7 @@ If a packet count and deadline are both specified, and fewer than count packets
 ## Discussion 
  
  Overall, I really enjoyed making this! This was my first time building a
-  complete Unix-based CLI application completely from the ground-up. Though I
+  complete Linux-based CLI application completely from the ground-up. Though I
    came in with knowledge of exceptional control flow, sockets/networking
    , and basic error-handling, a lot of the other stuff necessary for this
     project I picked up along the way. For example, I had no
@@ -90,7 +96,7 @@ For example, I believe the actual Unix **ping** implementation uses at least
         time, 
 refactoring my implementation to utilize different sender/receiver threads
  would be one of my top priorities.  
-
+ 
  
 ## References 
 
