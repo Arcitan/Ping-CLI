@@ -360,7 +360,9 @@ ping()
  *   Receives an incoming ICMP "echo reply" packet back from the destination
  *   server. Computes some statistics about the packet and prints out
  *   information about receiving that packet. Returns 0 on success and -1 on
- *   any failure to receive a proper packet. Returns 1 on a timeout error.
+ *   any failure to receive a proper packet. Returns 1 on a timeout error, or
+ *   on a malformed packet error (signifies "expected" errors that naturally
+ *   occur).
  */
 static int
 receive()
@@ -400,7 +402,7 @@ receive()
         /* Verify packet integrity */
         if (verify_packet(recvsize) < 0) {
                 fprintf(stderr, "verify_packet error\n");
-                return (-1);
+                return (1);
         }
 
         /* Count this packet as received */
@@ -457,19 +459,36 @@ verify_packet(const unsigned int recvsize)
                 return (-1);
         }
 
-        /* Verify packet type */
-        if (pckt->icmp_type != ICMP_ECHOREPLY) {
-                fprintf(stderr, "type error: %d bytes from %s: icmp_type=%d "
-                                "(%s) icmp_code=%d\n",
-                    recvsize, hostname,
-                    pckt->icmp_type, pr_type(pckt->icmp_type),
-                    pckt->icmp_code);
-                return (-1);
-        }
-
         /* Verify packet origin */
         if (pckt->icmp_id != pid) {
                 fprintf(stderr, "wrong packet id: (%d)\n", pckt->icmp_id);
+                return (-1);
+        }
+
+        /* Verify packet type */
+        if (pckt->icmp_type != ICMP_ECHOREPLY) {
+                if (pckt->icmp_type == ICMP_ECHO) {
+                        /*
+                         * Check for bounce-back. If we're here, then we know the
+                         * packet came from us (id = pid); if it's still of type
+                         * "echo request", then somehow the packet made a U-turn in
+                         * the network and bounced straight back to us.
+                         */
+                        fprintf(stderr,
+                            "bounce-back error: %d bytes returned: icmp_type=%d "
+                            "(%s) icmp_code=%d\n",
+                            recvsize,
+                            pckt->icmp_type, pr_type(pckt->icmp_type),
+                            pckt->icmp_code);
+                } else {
+                        /* Report all other unexpected packet types */
+                        fprintf(stderr,
+                            "type error: %d bytes from %s: icmp_type=%d "
+                            "(%s) icmp_code=%d\n",
+                            recvsize, hostname,
+                            pckt->icmp_type, pr_type(pckt->icmp_type),
+                            pckt->icmp_code);
+                }
                 return (-1);
         }
 
